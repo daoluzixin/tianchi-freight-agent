@@ -1,0 +1,83 @@
+{
+  "run_info": {
+    "start_time": "2026-05-13 20:14:27",
+    "end_time": "2026-05-13 20:32:56",
+    "duration_seconds": 1109,
+    "max_steps": 1000,
+    "steps_completed": 290,
+    "note": "修复rest追踪bug+合并休息步骤+规则fallback+查询退避",
+    "status": "partial_failure",
+    "failure_reason": "D004 LLM API 403 Forbidden (额度耗尽)"
+  },
+  "drivers_completed": ["D001", "D002", "D003"],
+  "drivers_failed": ["D004"],
+  "results": {
+    "D001": {
+      "total_steps": 176,
+      "sim_days_completed": 31,
+      "orders_accepted": 69,
+      "orders_failed": 15,
+      "wait_steps": 92,
+      "reposition_steps": 0,
+      "llm_calls": 43,
+      "rule_only_steps": 133,
+      "total_tokens": 106132,
+      "pre_rest_triggers": 34,
+      "acceptance_rate": 0.82,
+      "income_eligible_orders": 68,
+      "avg_pickup_deadhead_km": 14.2,
+      "avg_haul_distance_km": 30.5
+    },
+    "D002": {
+      "total_steps": 61,
+      "sim_days_completed": 31,
+      "orders_accepted": 31,
+      "orders_failed": 0,
+      "wait_steps": 30,
+      "reposition_steps": 0,
+      "llm_calls": 17,
+      "rule_only_steps": 44,
+      "total_tokens": 40628,
+      "pre_rest_triggers": 18,
+      "acceptance_rate": 1.0
+    },
+    "D003": {
+      "total_steps": 51,
+      "sim_days_completed": 31,
+      "orders_accepted": 37,
+      "orders_failed": 6,
+      "wait_steps": 8,
+      "reposition_steps": 0,
+      "llm_calls": 1,
+      "rule_only_steps": 50,
+      "total_tokens": 2213,
+      "pre_rest_triggers": 0,
+      "acceptance_rate": 0.86,
+      "note": "后期LLM API 403降级为纯规则"
+    }
+  },
+  "totals": {
+    "total_steps": 288,
+    "total_orders_accepted": 137,
+    "total_orders_failed": 21,
+    "total_wait_steps": 130,
+    "total_llm_calls": 61,
+    "total_rule_only_steps": 227,
+    "total_tokens": 148973,
+    "avg_steps_per_driver_31days": 96
+  },
+  "performance_analysis": {
+    "avg_time_per_step_seconds": 3.85,
+    "estimated_10_drivers_minutes": 62,
+    "token_budget_used_pct": 2.98,
+    "llm_call_ratio": 0.21,
+    "rule_decision_ratio": 0.79
+  },
+  "optimizations_applied": [
+    "修复 rest_streak/longest_rest_today 不更新的 bug (update_after_action 补偿)",
+    "合并休息步骤: wait_minutes 上限从 60→120 (REST), 60→480 (OFF_DAY)",
+    "前5天/无收入时跳过 LLM daily_review, 使用规则 fallback",
+    "智能等待上限从 60→120 分钟, 夜间等待 base*3",
+    "查询冷却上限从 40→80 分钟, 连续空查指数退避"
+  ]
+}

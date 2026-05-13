@@ -1,0 +1,7 @@
+{
+  "timestamp": "20260513_211602",
+  "status": "FAILED",
+  "error": "'\\n  \"violates\"'",
+  "max_steps": 500,
+  "note": "v5架构改进验证: D009+D010 (API降级容错+步骤合并+安全休息+弹性预算)"
+}

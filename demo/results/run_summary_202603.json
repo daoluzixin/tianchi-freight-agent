@@ -1,0 +1,15 @@
+{
+  "month": "2026-03",
+  "simulate_time_seconds": 553.58,
+  "simulation_duration_days": 31,
+  "completed_steps": 50,
+  "remaining_cargo_count": 46891,
+  "driver_completed_steps": {
+    "D009": 50,
+    "D010": 0
+  },
+  "driver_result_files": {
+    "D009": "/Users/feng/Downloads/demo_docs_release_20260509/demo/results/actions_202603_D009_20260513_214755.jsonl",
+    "D010": "/Users/feng/Downloads/demo_docs_release_20260509/demo/results/actions_202603_D010_20260513_214755.jsonl"
+  }
+}

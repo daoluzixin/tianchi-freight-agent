@@ -1,0 +1,13 @@
+{
+  "cargo_dataset_path": "data/cargo_dataset.jsonl",
+  "drivers_path": "data/drivers_d009_d010.json",
+  "reposition_speed_km_per_hour": 60.0,
+  "model_api_url": "https://aigc.sankuai.com/v1/openai/native/chat/completions",
+  "model_api_key": "22037140819727310868",
+  "model_name": "qwen3.5-plus",
+  "model_timeout_seconds": 60,
+  "results_dir": "results",
+  "log_dir": "results/logs",
+  "simulation_max_steps": 20000,
+  "simulation_duration_days": 31
+}

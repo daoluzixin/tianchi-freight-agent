@@ -102,6 +102,7 @@ class RuleEngine:
 
         soft_violated = False
         violation_note = ""
+        soft_violation_amount = 0.0
 
         # ===== 硬约束检查 =====
 
@@ -200,8 +201,18 @@ class RuleEngine:
                     else:
                         return None
 
-        # 11.6) 当日休息余量前瞻（软约束，由 CargoScorer 的 rest_lookahead_penalty 处理）
-        # 不做硬过滤，避免过度限制长途单导致毛收入大幅下降
+        # 11.6) R8.6 超长单保护：运输 > 1440min(24h) 的单锁定司机时间过长，
+        #        会导致无法响应突发事件（如动态偏好解锁），标记为软违反让 scorer 降分。
+        #        特别针对 D010 场景：家事偏好在 trigger 前不可见，接超长单后跨过整个家事窗口。
+        #        D010 step18: cargo 48130 cost=2282min，锁定 38h 导致 10860 元罚分。
+        #        策略：cost_time > 1440 标记软违反 + 高罚分权重（每超 1h 增加 200 元风险）
+        cost_time = float(cargo.get("cost_time_minutes", 0))
+        if cost_time > 1440:
+            soft_violated = True
+            over_hours = (cost_time - 1440) / 60
+            # 预估风险：超长单每多锁定 1 小时，风险约 200 元（覆盖 rest 违规 + 突发事件）
+            soft_violation_amount = max(soft_violation_amount, 200.0 * over_hours)
+            violation_note += f" 超长单风险({cost_time:.0f}min>24h, risk={soft_violation_amount:.0f})"
 
         # 12) 安静窗口时间推演：接单后整个执行区间不得与安静窗口重叠
         #     R8.3 修正：恢复全区间检查（R8.2 只查 action_start 导致 D007 29 次违规），
@@ -238,7 +249,8 @@ class RuleEngine:
         # ===== 软约束检查 =====
 
         # 14) 软禁止品类（接了会罚分）
-        soft_violation_amount = 0.0
+        # soft_violation_amount 已在函数顶部初始化为 0.0，
+        # rule 11.6 可能已设置超长单风险值，此处不重置
         if category in config.soft_forbidden_categories:
             soft_violated = True
             violation_note = f"软禁止品类: {category}"

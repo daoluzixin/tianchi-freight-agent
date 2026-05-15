@@ -173,6 +173,22 @@ class SchedulePlanner:
         # 计算自上次休息以来的连续工作时间
         continuous_work = state.sim_minutes - state.last_rest_end_min
         if continuous_work >= self._MAX_CONTINUOUS_WORK_MINUTES:
+            # R8.6: go_home 冲突保护 — 如果强制休息会导致错过 go_home deadline，
+            # 跳过安全休息。go_home 罚分 900/天远大于无休息的风险（仅安全建议，无罚分）。
+            if config.must_return_home and config.home_pos:
+                current_minutes_in_day = state.sim_minutes % 1440
+                deadline_min_in_day = config.home_deadline_hour * 60
+                time_to_deadline = deadline_min_in_day - current_minutes_in_day
+                if time_to_deadline > 0:
+                    dist_home = haversine_km(
+                        state.current_lat, state.current_lng,
+                        config.home_pos[0], config.home_pos[1])
+                    travel_home_min = dist_home / max(config.reposition_speed_kmpm, 0.01)
+                    # 如果 "安全休息时长 + 回家路程 + 缓冲" 会超过 deadline，跳过休息
+                    if (self._SAFETY_REST_MINUTES + travel_home_min
+                            + SAFETY_BUFFER_MINUTES > time_to_deadline):
+                        return None  # 让 _handle_go_home 处理
+
             return ScheduleDecision(
                 action=ScheduleAction.REST,
                 reason=f"安全保护：连续工作{continuous_work}min超过{self._MAX_CONTINUOUS_WORK_MINUTES}min阈值",
@@ -338,24 +354,16 @@ class SchedulePlanner:
                     priority=85,
                 )
             else:
-                # R8.4 修正：安静时段不在家，需权衡两种罚分：
-                #   go_home 违规 = 900/天（高罚分），quiet 安静窗口空驶违规 = 200-500/次
-                # 如果距家较近（< 4h 行程），立即回家虽然安静期 reposition 违规一次，
-                # 但到家后明天就不再 go_home 违规。如果太远则就地等待。
-                if travel_min <= 240:  # 4小时内能到家
-                    return ScheduleDecision(
-                        action=ScheduleAction.GO_HOME,
-                        reason=f"安静时段不在家，紧急回家（路程{travel_min:.0f}min，接受一次安静期违规以减少回家违规）",
-                        target_pos=config.home_pos,
-                        priority=92,
-                    )
-                else:
-                    return ScheduleDecision(
-                        action=ScheduleAction.REST,
-                        reason=f"错过回家 deadline 且距家太远（{travel_min:.0f}min），就地休息等待安静时段结束",
-                        wait_minutes=60,
-                        priority=90,
-                    )
+                # R8.6 修正：安静时段不在家，必须立即回家。
+                # D009 日志分析：几乎所有 go_home 违规都因为安静时段先 REST 60min
+                # 再回家导致迟到。go_home 罚分 900/天 >> quiet 空驶罚分 200-500/次，
+                # 所以无条件回家是最优策略（即使距家很远也要减少损失）。
+                return ScheduleDecision(
+                    action=ScheduleAction.GO_HOME,
+                    reason=f"安静时段不在家，紧急回家（路程{travel_min:.0f}min，go_home罚分900远超安静期罚分）",
+                    target_pos=config.home_pos,
+                    priority=92,
+                )
 
         # 判断是否需要提前出发
         deadline_minutes_in_day = config.home_deadline_hour * 60
@@ -370,6 +378,24 @@ class SchedulePlanner:
                 target_pos=config.home_pos,
                 priority=80,
             )
+
+        # R8.6: 额外保护 — 当 daily_rest 可能拦截时，提前回家。
+        # 条件：当天已过 80%（daily_rest 强制触发阈值）且 rest 未满足，
+        # 同时 "回家路程 + 缓冲 + rest时间" 超过剩余时间。
+        # 只在 daily_rest 即将触发的时间窗口内才激活，避免过早回家。
+        if (time_to_deadline > 0
+                and config.min_continuous_rest_minutes > 0
+                and state.longest_rest_today < config.min_continuous_rest_minutes
+                and current_minutes_in_day >= 1152):  # 与 _handle_daily_rest 的 80% 阈值一致
+            # daily_rest 即将强制触发，但休息后会错过 go_home deadline
+            rest_needed = min(config.min_continuous_rest_minutes, 480)
+            if travel_min + SAFETY_BUFFER_MINUTES + rest_needed > time_to_deadline:
+                return ScheduleDecision(
+                    action=ScheduleAction.GO_HOME,
+                    reason=f"回家优先：rest({rest_needed}min)+路程({travel_min:.0f}min)超出deadline余量({time_to_deadline}min)",
+                    target_pos=config.home_pos,
+                    priority=81,
+                )
 
         return None
 
@@ -431,6 +457,23 @@ class SchedulePlanner:
         if state.longest_rest_today >= config.min_continuous_rest_minutes:
             state.rest_satisfied_today = True
             return None
+
+        # R8.6 go_home 冲突保护：如果有 go_home 约束，检查休息后是否会错过 deadline。
+        # go_home 罚分 900/天 >> rest 罚分 200-400/天，所以 go_home 优先。
+        if config.must_return_home and config.home_pos:
+            minutes_in_day_now = state.sim_minutes % 1440
+            deadline_min_in_day = config.home_deadline_hour * 60
+            time_to_deadline = deadline_min_in_day - minutes_in_day_now
+            if time_to_deadline > 0:
+                dist_home = haversine_km(
+                    state.current_lat, state.current_lng,
+                    config.home_pos[0], config.home_pos[1])
+                travel_home_min = dist_home / max(config.reposition_speed_kmpm, 0.01)
+                # 如果 "当前时间 + 休息时长 + 回家路程 + 安全缓冲" 会超过 deadline，
+                # 则跳过休息让 go_home guard 优先处理
+                rest_duration = min(config.min_continuous_rest_minutes, 480)
+                if rest_duration + travel_home_min + SAFETY_BUFFER_MINUTES > time_to_deadline:
+                    return None  # 让 go_home 逻辑处理
 
         # 强制休息保护：当天已过 80% 时间但休息仍未满足
         minutes_in_day = state.sim_minutes % 1440

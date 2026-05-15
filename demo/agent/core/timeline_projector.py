@@ -138,7 +138,13 @@ def project_trip(
     cost_time = float(cargo.get("cost_time_minutes", 0))
     if cost_time > 0:
         # 使用货源自带的运输耗时（更准确，含路网距离信息）
-        arrive_at_delivery = action_start + pickup_travel + cost_time
+        # 关键修复 R8.6: 必须从 depart_pickup（含装货窗口等待）算起，
+        # 而非 action_start + pickup_travel（忽略了装货窗口等待时间）。
+        # 仿真引擎逻辑: finish = max(arrival, load_start) + cost_time_minutes
+        # 旧代码: arrive_at_delivery = action_start + pickup_travel + cost_time
+        #   → 当有装货窗口且需等待时严重低估（如 D009 cargo 224568: 
+        #     估计 1309min vs 实际 2265min，相差 16 小时）
+        arrive_at_delivery = depart_pickup + cost_time
     else:
         # fallback: 用直线距离 / 速度
         arrive_at_delivery = depart_pickup + haul_km / speed

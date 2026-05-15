@@ -1,0 +1,308 @@
+[
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 forbidden_zone bypass in reposition",
+      "bug_target": "reposition不检查禁区",
+      "purpose": "禁区覆盖热点区域，空驶必经禁区，验证reposition是否绕开禁区",
+      "difficulty": "hard",
+      "expected_types": ["forbidden_zone", "geo_fence", "max_distance(pickup)"]
+    },
+    "driver_id": "FW001",
+    "name": "飞轮-禁区空驶A",
+    "vehicle_no": "粤C30001",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.62,
+    "current_lng": 114.05,
+    "preferences": [
+      {
+        "content": "只在东莞跑货，车辆不得离开以下范围：北纬22.55至22.92，东经113.68至114.25。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2500,
+        "penalty_cap": 2500
+      },
+      {
+        "content": "车辆不得进入以（22.80，113.85）为圆心、半径20公里的区域，那边经常堵车。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": 10000
+      },
+      {
+        "content": "接单后赴装货点空驶距离不得超过25公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": null
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 forbidden_zone bypass in reposition",
+      "bug_target": "reposition不检查禁区 — 禁区在围栏中心",
+      "purpose": "禁区正好在围栏中心，几乎所有热点都在禁区内，reposition必须完全避开",
+      "difficulty": "extreme",
+      "expected_types": ["forbidden_zone", "geo_fence", "quiet_window"]
+    },
+    "driver_id": "FW002",
+    "name": "飞轮-禁区空驶B",
+    "vehicle_no": "粤C30002",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.70,
+    "current_lng": 113.95,
+    "preferences": [
+      {
+        "content": "车辆活动范围限制在：北纬22.55至22.90，东经113.75至114.15。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2000,
+        "penalty_cap": 2000
+      },
+      {
+        "content": "车辆不得进入以（22.73，113.95）为圆心、半径12公里的区域。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1200,
+        "penalty_cap": 12000
+      },
+      {
+        "content": "每天下午13点到14点半不接单不空跑，午饭时间。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 quiet_window parser loses '半'",
+      "bug_target": "解析器丢失'半'字导致安静窗口缩短30分钟",
+      "purpose": "测试各种含'半'的时间表达：N点半、N点半到M点、N点到M点半",
+      "difficulty": "hard",
+      "expected_types": ["quiet_window", "rest_constraint"]
+    },
+    "driver_id": "FW003",
+    "name": "飞轮-半点解析A",
+    "vehicle_no": "粤C30003",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.05,
+    "current_lng": 113.40,
+    "preferences": [
+      {
+        "content": "每天下午14点到15点半不接单不空跑，午休时间。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 150,
+        "penalty_cap": 4500
+      },
+      {
+        "content": "每天连续停车休息至少6小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 12000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 quiet_window parser loses '半'",
+      "bug_target": "解析器丢失'半'字 — start_hour含半",
+      "purpose": "起始时间含'半'：11点半到13点，测试start_minute是否正确解析",
+      "difficulty": "hard",
+      "expected_types": ["quiet_window", "forbidden_category"]
+    },
+    "driver_id": "FW004",
+    "name": "飞轮-半点解析B",
+    "vehicle_no": "粤C30004",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.88,
+    "current_lng": 113.60,
+    "preferences": [
+      {
+        "content": "每天上午11点半到下午1点不接单不空跑，吃饭休息。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "不接货源品类为「建材陶瓷」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 5000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 quiet_window parser loses '半'",
+      "bug_target": "解析器丢失'半'字 — 双半点",
+      "purpose": "起止都含'半'：10点半到12点半，测试双半点解析",
+      "difficulty": "extreme",
+      "expected_types": ["quiet_window", "max_distance(haul)", "rest_constraint"]
+    },
+    "driver_id": "FW005",
+    "name": "飞轮-半点解析C",
+    "vehicle_no": "粤C30005",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.10,
+    "current_lng": 113.20,
+    "preferences": [
+      {
+        "content": "每天上午10点半到12点半不接单不空跑，固定休息时间。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 250,
+        "penalty_cap": 7500
+      },
+      {
+        "content": "单笔运距不得超过80公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      },
+      {
+        "content": "每天连续停车休息至少7小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 15000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 combined bugs",
+      "bug_target": "禁区空驶 + 半点安静窗口同时触发",
+      "purpose": "同时包含禁区和半点安静窗口，验证两个修复不冲突",
+      "difficulty": "extreme",
+      "expected_types": ["forbidden_zone", "quiet_window", "geo_fence", "max_distance(pickup)"]
+    },
+    "driver_id": "FW006",
+    "name": "飞轮-组合验证",
+    "vehicle_no": "粤C30006",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.65,
+    "current_lng": 114.00,
+    "preferences": [
+      {
+        "content": "车辆活动范围限制在：北纬22.50至22.95，东经113.70至114.30。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2500,
+        "penalty_cap": 2500
+      },
+      {
+        "content": "车辆不得进入以（22.78，113.88）为圆心、半径15公里的区域，施工封路。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": 10000
+      },
+      {
+        "content": "每天下午13点半到15点不接单不空跑，午休时间。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "接单后赴装货点空驶距离不得超过30公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 250,
+        "penalty_cap": null
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 quiet_window parser edge cases",
+      "bug_target": "解析器 — 跨天半点窗口",
+      "purpose": "跨天安静窗口含半点：23点半到次日5点半，测试跨天+半点组合",
+      "difficulty": "extreme",
+      "expected_types": ["quiet_window", "rest_constraint", "off_days"]
+    },
+    "driver_id": "FW007",
+    "name": "飞轮-跨天半点",
+    "vehicle_no": "粤C30007",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.95,
+    "current_lng": 113.50,
+    "preferences": [
+      {
+        "content": "每天晚上23点半到次日早上5点半不接单不空跑，夜间休息。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 9000
+      },
+      {
+        "content": "每天连续停车休息至少6小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 12000
+      },
+      {
+        "content": "自然月内至少4天完全歇着，不接单不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 6000,
+        "penalty_cap": 6000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2.1",
+      "flywheel_source": "H002 quiet_window parser edge cases",
+      "bug_target": "解析器 — '一刻'变体",
+      "purpose": "测试'一刻'（15分钟）表达：2点一刻到4点，验证分钟解析泛化能力",
+      "difficulty": "medium",
+      "expected_types": ["quiet_window", "max_distance(pickup)"]
+    },
+    "driver_id": "FW008",
+    "name": "飞轮-一刻解析",
+    "vehicle_no": "粤C30008",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.00,
+    "current_lng": 113.30,
+    "preferences": [
+      {
+        "content": "每天下午2点一刻到4点不接单不空跑，午后休息。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 180,
+        "penalty_cap": 5400
+      },
+      {
+        "content": "接单后赴装货点空驶距离不得超过35公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      }
+    ]
+  }
+]

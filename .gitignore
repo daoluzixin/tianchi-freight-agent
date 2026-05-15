@@ -30,3 +30,17 @@ logs/
 demo/server/data/*.json
 !demo/server/data/.gitkeep
 demo/server/data/*.jsonl
+
+# Simulation results & logs (generated, don't track)
+demo/results/
+demo/log/
+
+# Analysis scripts (ad-hoc, not part of agent)
+analyze_*.py
+
+# Enhancement experiments
+enhancement/
+
+# Temp configs
+demo/config_*.json
+demo/server/config/config_d*.json

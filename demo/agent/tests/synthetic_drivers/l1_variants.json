@@ -1,0 +1,410 @@
+[
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "措辞变体 — 相同语义，不同表达方式",
+      "source_driver": "D001",
+      "expected_parse": "rest_constraint(8h) + forbidden_category(化工塑料,煤炭矿产) + geo_fence(深圳)"
+    },
+    "driver_id": "S001",
+    "name": "测试甲",
+    "vehicle_no": "粤B10001",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.54,
+    "current_lng": 114.06,
+    "preferences": [
+      {
+        "content": "身体吃不消，每天必须保证8个小时以上的连续睡眠时间，车熄火原地不动那种。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 3000
+      },
+      {
+        "content": "化工塑料跟煤炭矿产这两种货坚决不碰，味道大还危险。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 5000
+      },
+      {
+        "content": "活动范围就限定在深圳这一亩三分地，纬度22.42到22.89、经度113.74到114.66，出了这个框算违规。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2000,
+        "penalty_cap": 2000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "口语化+方言味表达",
+      "source_driver": "D002",
+      "expected_parse": "off_days(4) + forbidden_category(蔬菜) + rest_constraint(4h)"
+    },
+    "driver_id": "S002",
+    "name": "测试乙",
+    "vehicle_no": "粤B10002",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.02,
+    "current_lng": 113.75,
+    "preferences": [
+      {
+        "content": "一个月里头怎么也得让我歇个4天整，啥也不干，不接活不跑路。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 6000,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "蔬菜那种货不拉，水淋淋的弄脏车厢还难洗。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 350,
+        "penalty_cap": 3500
+      },
+      {
+        "content": "白天再忙，每天也得找个时间段停下来歇够4个钟头，不是在路上摸鱼，是真停车休息。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "书面正式语体表达",
+      "source_driver": "D003",
+      "expected_parse": "max_distance(monthly_deadhead,100km) + forbidden_zone(23.30,113.52,20km) + quiet_window(2:00-5:00)"
+    },
+    "driver_id": "S003",
+    "name": "测试丙",
+    "vehicle_no": "粤B10003",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.03,
+    "current_lng": 113.12,
+    "preferences": [
+      {
+        "content": "本月空载行驶累计里程严禁超过100公里上限，超出部分逐公里扣罚。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 10,
+        "penalty_cap": 2000
+      },
+      {
+        "content": "禁止驶入以坐标（23.30，113.52）为中心、半径20公里范围内的区域。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": 10000
+      },
+      {
+        "content": "夜间02:00至05:00时段内禁止承接订单及空车调度（以发车时刻为准）。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "简洁命令式表达",
+      "source_driver": "D004",
+      "expected_parse": "first_order_deadline(12) + max_orders(3) + quiet_window(12:00-13:00)"
+    },
+    "driver_id": "S004",
+    "name": "测试丁",
+    "vehicle_no": "粤B10004",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.52,
+    "current_lng": 113.39,
+    "preferences": [
+      {
+        "content": "接单日，首单开工时间不得超过中午12点。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 4000
+      },
+      {
+        "content": "日接单量上限3单，超出按单罚款，不设月度封顶。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      },
+      {
+        "content": "午间12点到13点固定休息，拒绝一切接单和空驶行为。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 100,
+        "penalty_cap": 3000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "长句嵌套+附加解释的冗余表达",
+      "source_driver": "D005",
+      "expected_parse": "max_distance(haul,100km) + max_distance(pickup,90km) + quiet_window(23:00-6:00)"
+    },
+    "driver_id": "S005",
+    "name": "测试戊",
+    "vehicle_no": "粤B10005",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.58,
+    "current_lng": 113.08,
+    "preferences": [
+      {
+        "content": "每一票货从装货地到卸货地之间的直线运输里程，我要求控制在100公里以内（含100公里），超了我就不干。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 100,
+        "penalty_cap": null
+      },
+      {
+        "content": "从我当前位置到货物装载点的空跑距离最多不能超过90公里，远了不划算油费都回不来。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 100,
+        "penalty_cap": null
+      },
+      {
+        "content": "晚上11点一到就收工了，一直到第二天早上6点之前，不接新单子也不空车跑路。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "数字中文混写+非标准标点",
+      "source_driver": "D006",
+      "expected_parse": "rest_constraint(5h) + forbidden_category(鲜活水产品) + max_distance(haul,150km) + off_days(2)"
+    },
+    "driver_id": "S006",
+    "name": "测试己",
+    "vehicle_no": "粤B10006",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.11,
+    "current_lng": 114.42,
+    "preferences": [
+      {
+        "content": "必须保证每天有5小时以上连续停车时间（真的停着不动，送货和空跑都不算）。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "鲜活水产品类的单子不要派给我,鱼虾螃蟹臭死了车里三天散不掉味。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 4000
+      },
+      {
+        "content": "每一单从起点到终点的运输公里数必须在一百五十公里之内，超了不跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 250,
+        "penalty_cap": 3000
+      },
+      {
+        "content": "这个月无论如何得留出2个完整天不出工——不拉货也不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 3000,
+        "penalty_cap": 3000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "带条件从句的复合表述",
+      "source_driver": "D009",
+      "expected_parse": "special_cargo(240646) + go_home(23h,23.12,113.28) + forbidden_category(快递快运搬家)"
+    },
+    "driver_id": "S007",
+    "name": "测试庚",
+    "vehicle_no": "粤B10007",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.12,
+    "current_lng": 113.28,
+    "preferences": [
+      {
+        "content": "【临时约定·熟货】有个老客户的指定货源编号240646（品类「服饰纺织皮革」）我必须接：装货地在韶关市浈江区（24.81，113.58）；上架时间：2026-03-03 14:43:36；要是不接，老客户就不跟我合作了，损失10000元。",
+        "start_time": "2026-03-01 14:43:36",
+        "end_time": "2026-03-03 16:08:24",
+        "penalty_amount": 10000,
+        "penalty_cap": 10000
+      },
+      {
+        "content": "家在（23.12，113.28），每天晚上23点前必须把车开回家附近一公里内；到家后从23点到次日8点完全歇着，不接活不瞎跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 900,
+        "penalty_cap": 27000
+      },
+      {
+        "content": "快递快运搬家这类小件散货我不干，活多钱少还跑断腿。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 350,
+        "penalty_cap": 3500
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "极简表达+省略主语",
+      "source_driver": "D010",
+      "expected_parse": "family_event + visit_target(23.13,113.26,5days) + rest_constraint(3h) + forbidden_category(服饰纺织皮革,soft)"
+    },
+    "driver_id": "S008",
+    "name": "测试辛",
+    "vehicle_no": "粤B10008",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.19,
+    "current_lng": 113.36,
+    "preferences": [
+      {
+        "content": "【临时约定·家事】2026年3月10日10:00，家中急事：须先到（23.21，113.37）接上配偶（原地停留不少于10分钟），再返回老家（23.19，113.36）；须在2026年3月10日22:00前进家门，到家后须在原处静止，至少待到2026年3月13日22:00事情解决方可再出车。解决前（2026年3月10日22:00至2026年3月13日22:00）每迟到或不在家1分钟罚5元、上不封顶。未接到配偶即抵达老家、完全未抵达家中或提前离家，满足任一项额外一次性罚9000元。",
+        "start_time": "2026-03-10 10:00:00",
+        "end_time": "2026-03-13 22:00:00",
+        "penalty_amount": 9000,
+        "penalty_cap": null
+      },
+      {
+        "content": "每月5天到（23.13，113.26）附近一公里内打卡，同一天多次只记一次。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 3000,
+        "penalty_cap": 3000
+      },
+      {
+        "content": "每天停车连续休息不少于3小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "尽量不拉「服饰纺织皮革」这类货，拉了就扣钱但不强制。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 240,
+        "penalty_cap": 2400
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "反向叙述+双重否定",
+      "source_driver": "D007",
+      "expected_parse": "quiet_window(23:00-4:00) + forbidden_category(机械设备) + max_distance(haul,180km) + off_days(1)"
+    },
+    "driver_id": "S009",
+    "name": "测试壬",
+    "vehicle_no": "粤B10009",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.05,
+    "current_lng": 112.46,
+    "preferences": [
+      {
+        "content": "深夜11点之后到凌晨4点之前不允许接任何订单，也不许空跑赶路（停在路边候着不违规）。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 15000
+      },
+      {
+        "content": "货源品类里边的「机械设备」一律拒绝，不管价格多好都不碰。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 280,
+        "penalty_cap": 2800
+      },
+      {
+        "content": "任何一单从装货点跑到卸货点不能比180公里更远，超了这距离我不跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 2400
+      },
+      {
+        "content": "这个月里面不能365天都在干活，起码得给自己安排一个完整的休息日。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 800,
+        "penalty_cap": 800
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L1",
+      "purpose": "带括号补充说明的表达方式",
+      "source_driver": "D008",
+      "expected_parse": "off_days(2) + rest_constraint(4h,weekday) + forbidden_category(食品饮料,soft) + max_distance(pickup,50km)"
+    },
+    "driver_id": "S010",
+    "name": "测试癸",
+    "vehicle_no": "粤B10010",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.27,
+    "current_lng": 113.58,
+    "preferences": [
+      {
+        "content": "一个月最少2天彻底不出车（既不接活儿，也不空着乱晃），就在家歇着。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1500,
+        "penalty_cap": 1500
+      },
+      {
+        "content": "平日（不含周末）每天要确保连续停车休息满4个小时，是真停住不动那种。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 12000
+      },
+      {
+        "content": "食品饮料类的货尽量给我少派（不是完全不能接，就是尽量避免）。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 2000
+      },
+      {
+        "content": "去接货跑的空路程（就是没拉货的那段）不能超过50公里，油费成本太高。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 100,
+        "penalty_cap": 2000
+      }
+    ]
+  }
+]

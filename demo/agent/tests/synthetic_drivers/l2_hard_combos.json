@@ -1,0 +1,397 @@
+[
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "极端多约束叠加：6个约束同时生效，覆盖休息+禁区+时间窗+距离+品类+off-day",
+      "difficulty": "hard",
+      "expected_types": ["rest_constraint", "forbidden_zone", "quiet_window", "max_distance(haul)", "forbidden_category", "off_days"]
+    },
+    "driver_id": "H001",
+    "name": "压力甲",
+    "vehicle_no": "粤C20001",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.78,
+    "current_lng": 113.95,
+    "preferences": [
+      {
+        "content": "每天必须连续停车休息至少6小时，真熄火那种，跑半道上趴窝不算。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 12000
+      },
+      {
+        "content": "车辆不得进入以（22.95，113.80）为圆心、半径15公里的区域。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1500,
+        "penalty_cap": 15000
+      },
+      {
+        "content": "每天凌晨1点到早上7点属于我的绝对休息时间，不接单不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 9000
+      },
+      {
+        "content": "单笔运距（装货点到卸货点）不得超过120公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 150,
+        "penalty_cap": 3000
+      },
+      {
+        "content": "不接货源品类为「建材陶瓷」或「化工塑料」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 600,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "自然月内至少3天完全歇着，不接单不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 5000,
+        "penalty_cap": 5000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "地理围栏+禁区叠加：围栏范围小且内含禁区，可用活动区域极度压缩",
+      "difficulty": "hard",
+      "expected_types": ["geo_fence", "forbidden_zone", "max_distance(pickup)", "quiet_window"]
+    },
+    "driver_id": "H002",
+    "name": "压力乙",
+    "vehicle_no": "粤C20002",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.62,
+    "current_lng": 114.05,
+    "preferences": [
+      {
+        "content": "只在东莞跑货，车辆不得离开以下范围：北纬22.55至22.92，东经113.68至114.25。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2500,
+        "penalty_cap": 2500
+      },
+      {
+        "content": "车辆不得进入以（22.75，113.90）为圆心、半径10公里的区域，那边路况太差。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 800,
+        "penalty_cap": 8000
+      },
+      {
+        "content": "接单后赴装货点空驶距离不得超过30公里，近的单优先。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      },
+      {
+        "content": "每天下午14点到15点半不接单不空跑，午休时间。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 150,
+        "penalty_cap": 4500
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "高罚金+无封顶组合：每条违规代价极高，测试策略是否严格避让",
+      "difficulty": "extreme",
+      "expected_types": ["go_home", "forbidden_category", "max_orders", "rest_constraint"]
+    },
+    "driver_id": "H003",
+    "name": "压力丙",
+    "vehicle_no": "粤C20003",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.08,
+    "current_lng": 113.32,
+    "preferences": [
+      {
+        "content": "每天21点前车辆须在自家位置（23.08，113.32）一公里内停好；当天21点至次日7点不接单、不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1500,
+        "penalty_cap": null
+      },
+      {
+        "content": "不接货源品类为「危险品」或「活禽畜牧」或「化工塑料」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2000,
+        "penalty_cap": null
+      },
+      {
+        "content": "同一天接单不得超过2单；每多一单按单计罚无月度封顶。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": null
+      },
+      {
+        "content": "每天连续停车休息至少7小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": null
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "时间窗冲突：多个安静窗口+首单限制+回家，有效工作时间极短",
+      "difficulty": "extreme",
+      "expected_types": ["quiet_window", "quiet_window", "first_order_deadline", "go_home", "off_days"]
+    },
+    "driver_id": "H004",
+    "name": "压力丁",
+    "vehicle_no": "粤C20004",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.15,
+    "current_lng": 113.25,
+    "preferences": [
+      {
+        "content": "每天凌晨0点到早上8点不接单不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 12000
+      },
+      {
+        "content": "每天中午11点到下午2点午休时间，不接单不空驶。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "只要这天接了单，首单必须在上午9点前开工。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 5000
+      },
+      {
+        "content": "每天19点前车辆须在自家位置（23.15，113.25）一公里内；当天19点至次日8点不接单、不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1200,
+        "penalty_cap": null
+      },
+      {
+        "content": "自然月内至少要有6个完整天不出车。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 8000,
+        "penalty_cap": 8000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "特殊事件+高频到访+距离限制叠加：必须去远处接熟货但空驶受限",
+      "difficulty": "extreme",
+      "expected_types": ["special_cargo", "visit_target", "max_distance(pickup)", "max_distance(monthly_deadhead)", "forbidden_category"]
+    },
+    "driver_id": "H005",
+    "name": "压力戊",
+    "vehicle_no": "粤C20005",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.85,
+    "current_lng": 113.55,
+    "preferences": [
+      {
+        "content": "【临时约定·熟货】指定熟货源编号350812（品类「电子产品」）：装货地：惠州市惠城区（23.08，114.42）；上架时间：2026-03-05 09:30:00；不接则丧失长期合作，经济损失15000元。",
+        "start_time": "2026-03-03 00:00:00",
+        "end_time": "2026-03-05 12:00:00",
+        "penalty_amount": 15000,
+        "penalty_cap": 15000
+      },
+      {
+        "content": "自然月内至少8个不同的自然日到过（22.90，113.60）一公里内；同日多次只算一天。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 4000,
+        "penalty_cap": 4000
+      },
+      {
+        "content": "接单后赴装货点的空驶距离不得超过40公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 150,
+        "penalty_cap": null
+      },
+      {
+        "content": "一个月空驶赶路里程总和不得超过200公里；仅对超出部分按公里计罚。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 15,
+        "penalty_cap": 3000
+      },
+      {
+        "content": "不接货源品类为「生鲜冷链」或「危化品」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 700,
+        "penalty_cap": 7000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "家事事件变体：不同触发时间+多途经点+更复杂条件",
+      "difficulty": "hard",
+      "expected_types": ["family_event", "rest_constraint", "forbidden_category"]
+    },
+    "driver_id": "H006",
+    "name": "压力己",
+    "vehicle_no": "粤C20006",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.95,
+    "current_lng": 113.70,
+    "preferences": [
+      {
+        "content": "【临时约定·家事】2026年3月15日14:00，家中急事：须先到（22.97，113.72）接上配偶（原地停留不少于15分钟），再返回老家（22.95，113.70）；须在2026年3月15日20:00前进家门，到家后须在原处静止，至少待到2026年3月18日08:00事情解决方可再出车。解决前（2026年3月15日20:00至2026年3月18日08:00）每迟到或不在家1分钟罚8元、上不封顶。未接到配偶即抵达老家、完全未抵达家中或提前离家，满足任一项额外一次性罚12000元。",
+        "start_time": "2026-03-15 14:00:00",
+        "end_time": "2026-03-18 08:00:00",
+        "penalty_amount": 12000,
+        "penalty_cap": null
+      },
+      {
+        "content": "除家事期间外，每天连续停车休息至少5小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 350,
+        "penalty_cap": 10000
+      },
+      {
+        "content": "不接货源品类为「废品回收」或「煤炭矿产」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 450,
+        "penalty_cap": 4500
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "距离限制极端化：运距和空驶都极短，只能接非常近的货",
+      "difficulty": "hard",
+      "expected_types": ["max_distance(haul)", "max_distance(pickup)", "max_distance(monthly_deadhead)", "rest_constraint", "quiet_window"]
+    },
+    "driver_id": "H007",
+    "name": "压力庚",
+    "vehicle_no": "粤C20007",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.00,
+    "current_lng": 113.10,
+    "preferences": [
+      {
+        "content": "单笔货装货点至卸货点的距离不得超过50公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      },
+      {
+        "content": "接单后赴装货点的空驶距离不得超过20公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      },
+      {
+        "content": "一个月空驶赶路里程总和不得超过60公里；超出部分按公里计罚。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 20,
+        "penalty_cap": 4000
+      },
+      {
+        "content": "每天连续停车休息至少8小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 15000
+      },
+      {
+        "content": "每天20点到次日6点不接单、不空车赶路。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 9000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L2",
+      "purpose": "软硬约束混合：多个品类限制（hard+soft）+距离+接单量",
+      "difficulty": "medium",
+      "expected_types": ["forbidden_category(hard)", "forbidden_category(soft)", "forbidden_category(soft)", "max_distance(haul)", "max_orders"]
+    },
+    "driver_id": "H008",
+    "name": "压力辛",
+    "vehicle_no": "粤C20008",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.70,
+    "current_lng": 114.20,
+    "preferences": [
+      {
+        "content": "不接货源品类为「危险品」或「放射性物质」的订单，这是底线。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 3000,
+        "penalty_cap": null
+      },
+      {
+        "content": "尽量不接货源品类为「煤炭矿产」的订单，灰尘大伤车。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 2000
+      },
+      {
+        "content": "尽量不拉货源品类为「建材陶瓷」的订单，太重费轮胎。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 150,
+        "penalty_cap": 1500
+      },
+      {
+        "content": "单笔货装货点至卸货点的距离不得超过200公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 100,
+        "penalty_cap": 2000
+      },
+      {
+        "content": "同一天接单不得超过4单，超出按单计罚。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 6000
+      }
+    ]
+  }
+]

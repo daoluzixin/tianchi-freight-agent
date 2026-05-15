@@ -1,0 +1,413 @@
+[
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 全新约束类型：周末限行（当前14种未覆盖）",
+      "attack_vector": "weekend_restriction",
+      "expected_behavior": "应被解析为 custom 或通过 LLM 正确识别为时间窗变体",
+      "notes": "测试解析器对'仅周末生效'条件的泛化能力"
+    },
+    "driver_id": "A001",
+    "name": "对抗甲",
+    "vehicle_no": "粤D30001",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.80,
+    "current_lng": 113.90,
+    "preferences": [
+      {
+        "content": "周六周日全天不接单不出车，这是铁律，家人时间不容商量。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2000,
+        "penalty_cap": null
+      },
+      {
+        "content": "工作日每天连续停车休息至少4小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "不接货源品类为「活禽畜牧」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 4000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 累计收入上限约束（全新类型）",
+      "attack_vector": "income_cap",
+      "expected_behavior": "无法映射到已有14种，应进入 custom 由 LLM 逐步判断",
+      "notes": "测试'挣够就停'这种收入驱动的约束"
+    },
+    "driver_id": "A002",
+    "name": "对抗乙",
+    "vehicle_no": "粤D30002",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.10,
+    "current_lng": 113.40,
+    "preferences": [
+      {
+        "content": "本月累计运费收入达到25000元后即停止接单，多出来的活不干了——够花就行。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 5000
+      },
+      {
+        "content": "每天22点到次日6点不接单不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "尽量不拉货源品类为「农产品粮食」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 100,
+        "penalty_cap": 1000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 连续工作时间上限（疲劳约束反向表达）",
+      "attack_vector": "max_continuous_work",
+      "expected_behavior": "可能被误解为 rest_constraint，但语义不同（限制工作时长而非要求休息时长）",
+      "notes": "测试是否能区分'最多工作N小时'和'至少休息M小时'"
+    },
+    "driver_id": "A003",
+    "name": "对抗丙",
+    "vehicle_no": "粤D30003",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.65,
+    "current_lng": 114.10,
+    "preferences": [
+      {
+        "content": "从第一单出发时间算起，当天连续工作（含送货和空跑）不得超过10小时，到了就必须歇着。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 400,
+        "penalty_cap": 12000
+      },
+      {
+        "content": "单笔货装货点至卸货点的距离不得超过80公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 150,
+        "penalty_cap": null
+      },
+      {
+        "content": "不接货源品类为「大件家具」或「超长钢材」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 500,
+        "penalty_cap": 5000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 连续接单间隔约束（全新类型）",
+      "attack_vector": "order_interval",
+      "expected_behavior": "无法映射到已有类型，应进入 custom",
+      "notes": "测试'两单之间必须间隔N小时'的约束"
+    },
+    "driver_id": "A004",
+    "name": "对抗丁",
+    "vehicle_no": "粤D30004",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.20,
+    "current_lng": 113.50,
+    "preferences": [
+      {
+        "content": "连续两单之间必须间隔至少2小时（从上一单卸货完毕到下一单接单时刻），不能无缝连轴。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 9000
+      },
+      {
+        "content": "自然月内至少2天完全不出车。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2000,
+        "penalty_cap": 2000
+      },
+      {
+        "content": "车辆不得进入以（23.35，113.55）为圆心、半径25公里的区域。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": 10000
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 天气/路况条件约束（全新类型）",
+      "attack_vector": "conditional_constraint",
+      "expected_behavior": "含条件从句，传统规则难以处理，需 LLM 理解",
+      "notes": "测试'如果...则...'条件式约束"
+    },
+    "driver_id": "A005",
+    "name": "对抗戊",
+    "vehicle_no": "粤D30005",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.90,
+    "current_lng": 113.65,
+    "preferences": [
+      {
+        "content": "如果装货地或卸货地在高速公路沿线（装卸点坐标与最近高速入口直线距离不超过5公里），则该单运费须不低于200元才接。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 3000
+      },
+      {
+        "content": "每天凌晨0点到早上5点不接单不空跑。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 250,
+        "penalty_cap": 7500
+      },
+      {
+        "content": "每天连续停车休息至少6小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 300,
+        "penalty_cap": 9000
+      },
+      {
+        "content": "接单后赴装货点的空驶距离不得超过60公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 120,
+        "penalty_cap": null
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 单日最低收入约束（全新类型）",
+      "attack_vector": "daily_min_income",
+      "expected_behavior": "不属于已有14种，应进入 custom",
+      "notes": "测试'接单日收入不低于X元否则罚款'这种目标驱动约束"
+    },
+    "driver_id": "A006",
+    "name": "对抗己",
+    "vehicle_no": "粤D30006",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.05,
+    "current_lng": 112.90,
+    "preferences": [
+      {
+        "content": "如果当天决定出车接单了，那当天的运费总收入不得低于800元，否则算亏本出车受罚。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 600,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "不接货源品类为「液态化学品」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 800,
+        "penalty_cap": 8000
+      },
+      {
+        "content": "每天21点到次日5点不接单不空驶。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 350,
+        "penalty_cap": 10500
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 多目标点巡回约束（visit_target 的复杂变体）",
+      "attack_vector": "multi_waypoint_visit",
+      "expected_behavior": "可能被解析为多个 visit_target，但原文是一条约束表达多个点",
+      "notes": "测试解析器是否能从单条偏好中拆分出多个结构化约束"
+    },
+    "driver_id": "A007",
+    "name": "对抗庚",
+    "vehicle_no": "粤D30007",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.00,
+    "current_lng": 113.30,
+    "preferences": [
+      {
+        "content": "这个月必须分别到过以下三个地点各至少3天：A点（22.95，113.25）一公里内、B点（23.10，113.45）一公里内、C点（23.20，113.35）两公里内。同日到同一点多次只计一次。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 2000,
+        "penalty_cap": 6000
+      },
+      {
+        "content": "每天连续停车休息至少4小时。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 250,
+        "penalty_cap": 7500
+      },
+      {
+        "content": "同一天接单不得超过3单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 200,
+        "penalty_cap": null
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 特定日期事件（非家事类，而是定期维保约束）",
+      "attack_vector": "scheduled_maintenance",
+      "expected_behavior": "不完全匹配 family_event，应该进入 custom 或被 LLM 识别为特殊事件",
+      "notes": "测试'固定日期必须去某地并停留N小时'的约束"
+    },
+    "driver_id": "A008",
+    "name": "对抗辛",
+    "vehicle_no": "粤D30008",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.75,
+    "current_lng": 113.85,
+    "preferences": [
+      {
+        "content": "2026年3月8日和3月22日必须到（22.78，113.88）进行车辆保养，每次到达后原地停留不少于3小时；未按时到达每次罚5000元。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 5000,
+        "penalty_cap": 10000
+      },
+      {
+        "content": "不接货源品类为「超重货物」或「大型机械」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 350,
+        "penalty_cap": 3500
+      },
+      {
+        "content": "一个月空驶赶路里程总和不得超过150公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 12,
+        "penalty_cap": 2400
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 混合语言+特殊符号干扰",
+      "attack_vector": "noisy_text",
+      "expected_behavior": "解析器应能从噪声文本中提取核心约束",
+      "notes": "测试解析器对非标准文本格式的鲁棒性"
+    },
+    "driver_id": "A009",
+    "name": "对抗壬",
+    "vehicle_no": "粤D30009",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 22.55,
+    "current_lng": 114.00,
+    "preferences": [
+      {
+        "content": "！！！重要！！！每天rest时间>=5hrs连续停车（engine off），不能间断！！！否则扣钱！",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 350,
+        "penalty_cap": 10500
+      },
+      {
+        "content": "品类blacklist：「危险品」&「易燃易爆」=> reject，无条件拒绝!!!",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": null
+      },
+      {
+        "content": "max运距limit=120km（from装货点to卸货点），over的话不做。distance_type=haul",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 180,
+        "penalty_cap": 3600
+      },
+      {
+        "content": "geo围栏：lat∈[22.40,22.90], lng∈[113.80,114.30]，超出range即violation。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1500,
+        "penalty_cap": 1500
+      }
+    ]
+  },
+  {
+    "_meta": {
+      "layer": "L3",
+      "purpose": "对抗性探针 — 相对时间约束+动态条件（全新类型）",
+      "attack_vector": "relative_time",
+      "expected_behavior": "解析器对'连续N天后必须休一天'的理解",
+      "notes": "测试非绝对时间的约束表达"
+    },
+    "driver_id": "A010",
+    "name": "对抗癸",
+    "vehicle_no": "粤D30010",
+    "truck_length": "4.2米",
+    "cost_per_km": 1.5,
+    "current_lat": 23.15,
+    "current_lng": 113.60,
+    "preferences": [
+      {
+        "content": "连续出车不得超过5天，每干满5天必须紧接着歇一整天（24小时不接单不空跑），否则每多干一天罚一次。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 1000,
+        "penalty_cap": null
+      },
+      {
+        "content": "接单后赴装货点的空驶距离不得超过70公里。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 130,
+        "penalty_cap": null
+      },
+      {
+        "content": "每天凌晨1点到早上6点不接单不空驶。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 250,
+        "penalty_cap": 7500
+      },
+      {
+        "content": "不接货源品类为「医疗废物」的订单。",
+        "start_time": "2026-03-01 00:00:00",
+        "end_time": "2026-03-31 23:59:59",
+        "penalty_amount": 600,
+        "penalty_cap": 6000
+      }
+    ]
+  }
+]

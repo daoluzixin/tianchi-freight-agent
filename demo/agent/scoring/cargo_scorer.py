@@ -19,6 +19,10 @@ from typing import TYPE_CHECKING, Any
 from agent.config.driver_config import DriverConfig, _parse_datetime_to_sim_minutes
 from agent.core.rule_engine import FilteredCargo
 from agent.core.state_tracker import DriverState, haversine_km
+from agent.core.timeline_projector import (
+    SCAN_COST_MINUTES,
+    compute_go_home_penalty_score,
+)
 from agent.scoring.supply_predictor import SupplyPredictor
 
 if TYPE_CHECKING:
@@ -134,6 +138,7 @@ class CargoScorer:
         """计算单条货源的综合得分。
 
         所有阈值/权重均从 params 读取；params 为 None 时使用默认值。
+
         """
         # 延迟导入避免循环；若 params 为 None 则构造默认值
         if params is None:
@@ -141,6 +146,7 @@ class CargoScorer:
             params = StrategyParams()
 
         cargo = fc.cargo
+
 
         # 1) 运费收入
         gross_income = float(cargo.get("price", 0.0))
@@ -164,9 +170,14 @@ class CargoScorer:
                                 * params.deadhead_penalty_factor)
 
         # 5) 偏好违反风险（软约束）
+        #    P3 fix: 使用实际罚分金额（如有），而非固定默认值
         preference_penalty = 0.0
         if fc.is_soft_violated:
-            preference_penalty = params.soft_violation_penalty
+            actual_amount = fc.soft_violation_amount
+            base_penalty = actual_amount if actual_amount > 0 else params.soft_violation_penalty
+            # 软约束罚分加重：实际罚分 * 2.5 倍作为评分惩罚
+            # 因为接一单软约束货不仅有直接罚分，还有"消耗了一个接单机会"的机会成本
+            preference_penalty = base_penalty * 2.5
 
         # 6) 位置优势：卸货点的未来供给价值（数据驱动 + 热点 fallback）
         delivery_lat = float(cargo.get("delivery_lat", 0.0))
@@ -176,13 +187,23 @@ class CargoScorer:
         position_bonus = self._enhanced_position_bonus(
             delivery_lat, delivery_lng, arrival_sim_min, params)
 
-        # 7) 空驶配额保护
+        # 7) 空驶配额保护（增强版：渐进式罚分）
         deadhead_budget_penalty = 0.0
         if config.max_monthly_deadhead_km is not None:
             remaining_budget = config.max_monthly_deadhead_km - state.total_deadhead_km
-            if remaining_budget < fc.pickup_km * params.deadhead_budget_warning_mult:
+            budget_usage_ratio = 1.0 - remaining_budget / max(config.max_monthly_deadhead_km, 1.0)
+            # 渐进式罚分：配额使用超过 50% 就开始施加压力
+            if budget_usage_ratio > 0.5:
+                # 压力因子：50%→0, 75%→1, 100%→2
+                pressure = (budget_usage_ratio - 0.5) * 4.0
                 deadhead_budget_penalty = (fc.pickup_km
-                                           * params.deadhead_budget_penalty_mult)
+                                           * params.deadhead_budget_penalty_mult
+                                           * (1.0 + pressure))
+            # 原有的紧急保护仍然保留
+            if remaining_budget < fc.pickup_km * params.deadhead_budget_warning_mult:
+                deadhead_budget_penalty = max(
+                    deadhead_budget_penalty,
+                    fc.pickup_km * params.deadhead_budget_penalty_mult * 3.0)
 
         # 8) 回家便利性
         home_bonus = 0.0
@@ -210,6 +231,61 @@ class CargoScorer:
             load_wait_cost -= rest_credit * params.time_cost_per_minute * 0.5
             load_wait_cost = max(0.0, load_wait_cost)
 
+        # 11) 首单 deadline 紧迫加分
+        #     当天尚未接到首单且距 deadline 临近时，降低接单门槛
+        first_order_urgency = 0.0
+        if (config.first_order_deadline_hour is not None
+                and state.today_first_order_minute is None):
+            hour = state.hour_in_day()
+            hours_to_deadline = config.first_order_deadline_hour - hour
+            first_order_penalty = config.penalty_weights.get("first_order", 0.0)
+            if hours_to_deadline < 0:
+                # 已过 deadline：加大激励，罚分已经产生，必须止损
+                first_order_urgency = first_order_penalty * 0.5
+            elif hours_to_deadline <= 2:
+                # 距 deadline 不到 2 小时：按紧迫程度线性加分
+                urgency_ratio = 1.0 - hours_to_deadline / 2.0
+                first_order_urgency = first_order_penalty * 0.3 * urgency_ratio
+
+        # 12) 休息余量前瞻罚分
+        rest_lookahead_penalty = 0.0
+        if config.min_continuous_rest_minutes > 0:
+            # 估算运输完成时间（含 scan_cost）
+            trip_minutes_est = (fc.pickup_km + fc.haul_km) / max(config.reposition_speed_kmpm, 0.01)
+            finish_est = state.sim_minutes + SCAN_COST_MINUTES + trip_minutes_est
+            # 完成时刻所在自然日的剩余时间
+            finish_day_end = ((int(finish_est) // 1440) + 1) * 1440
+            day_remaining = finish_day_end - finish_est
+            rest_needed = config.min_continuous_rest_minutes
+            if day_remaining < rest_needed and state.longest_rest_today < rest_needed:
+                # 剩余时间不够 rest，按缺口比例施加罚分
+                shortfall_ratio = 1.0 - day_remaining / rest_needed
+                rest_penalty_per_day = config.penalty_weights.get("rest", 300)
+                rest_lookahead_penalty = rest_penalty_per_day * shortfall_ratio
+
+        # 13) 回家前瞻罚分：统一使用 TimelineProjector（含 scan_cost + 统一安全余量）
+        go_home_penalty = compute_go_home_penalty_score(
+            state, config, cargo, fc.pickup_km, fc.haul_km)
+
+        # 14) 首单 deadline 跨天风险：下午接长途单导致次日首单延迟
+        first_order_cross_day_penalty = 0.0
+        if config.first_order_deadline_hour is not None:
+            trip_minutes_est = (fc.pickup_km + fc.haul_km) / max(config.reposition_speed_kmpm, 0.01)
+            finish_est = state.sim_minutes + SCAN_COST_MINUTES + trip_minutes_est
+            # 如果运输跨天（卸货在次日）
+            current_day = int(state.sim_minutes) // 1440
+            finish_day = int(finish_est) // 1440
+            if finish_day > current_day:
+                # 卸货时间在次日的几点
+                finish_hour_in_day = (finish_est % 1440) / 60
+                # 卸货后需要时间找货接单（扫单循环约 30-60 分钟）
+                effective_first_order_hour = finish_hour_in_day + 1.0
+                if effective_first_order_hour > config.first_order_deadline_hour:
+                    # 次日首单必定晚于 deadline
+                    overshoot_hours = effective_first_order_hour - config.first_order_deadline_hour
+                    penalty_per_violation = config.penalty_weights.get("first_order", 200)
+                    first_order_cross_day_penalty = penalty_per_violation * min(2.0, overshoot_hours)
+
         # 综合得分
         score = (gross_income
                  - distance_cost
@@ -220,7 +296,11 @@ class CargoScorer:
                  - deadhead_budget_penalty
                  + home_bonus
                  + efficiency_bonus
-                 - load_wait_cost)
+                 - load_wait_cost
+                 + first_order_urgency
+                 - rest_lookahead_penalty
+                 - go_home_penalty
+                 - first_order_cross_day_penalty)
 
         breakdown = {
             "gross_income": gross_income,
@@ -233,6 +313,10 @@ class CargoScorer:
             "home_bonus": home_bonus,
             "efficiency_bonus": efficiency_bonus,
             "load_wait_cost": -load_wait_cost,
+            "first_order_urgency": first_order_urgency,
+            "rest_lookahead_penalty": -rest_lookahead_penalty,
+            "go_home_penalty": -go_home_penalty,
+            "first_order_cross_day_penalty": -first_order_cross_day_penalty,
         }
 
         return score, breakdown

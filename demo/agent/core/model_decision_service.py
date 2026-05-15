@@ -37,6 +37,7 @@ from agent.core.state_tracker import StateTracker, DriverState, haversine_km
 from agent.core.schedule_planner import SchedulePlanner, ScheduleAction, ScheduleDecision
 from agent.core.rule_engine import RuleEngine, FilteredCargo
 from agent.scoring.cargo_scorer import CargoScorer, ScoredCargo
+from agent.core.timeline_projector import SCAN_COST_MINUTES, SAFETY_BUFFER_MINUTES
 from agent.strategy.token_budget import TokenBudgetManager
 from agent.strategy.strategy_advisor import StrategyAdvisor, StrategyParams
 
@@ -77,25 +78,88 @@ class ModelDecisionService:
         self._last_query_sim_min: dict[str, int] = {}     # 上次 query_cargo 的仿真时刻
         self._last_query_empty: dict[str, bool] = {}      # 上次 query 是否返回空
         self._pending_action: dict[str, dict[str, Any]] = {}  # 缓存上一步 action，用于下次 decide 时更新 state
+        self._pending_issued_at: dict[str, int] = {}  # action 发出时的 sim_minutes，用于跨天 order_days 补偿
+        self._known_pref_count: dict[str, int] = {}  # 已知偏好数量（用于检测新偏好解锁）
 
     def decide(self, driver_id: str) -> dict[str, Any]:
         """主决策入口。"""
 
         # 1. 获取当前状态
+        #    关键时序：当有 pending_action 时，必须先补偿状态再做跨天检测。
+        #    否则前一天的 take_order 还未记入 order_days，_check_day_rollover
+        #    会误将有接单的日子标记为 off-day，导致 off_days 计数虚高，
+        #    真正需要的 planned off-day 被跳过。
         status = self._api.get_driver_status(driver_id)
-        state = self._tracker.init_from_status(driver_id, status)
+        has_pending = driver_id in self._pending_action
+        state = self._tracker.init_from_status(
+            driver_id, status, skip_rollover=has_pending)
 
         # 补偿更新：用上一步缓存的 action 更新 state（因为 orchestrator 不调用 update_after_action）
-        if driver_id in self._pending_action:
+        if has_pending:
             prev_action = self._pending_action.pop(driver_id)
+            issued_at = self._pending_issued_at.pop(driver_id, None)
+
+            # 跨天 take_order 补丁：如果 action 是 take_order 且发出时在前一天，
+            # 确保发出日也记入 order_days，避免被误判为 off-day。
+            action_name = str(prev_action.get("action", "")).lower()
+            if action_name == "take_order" and issued_at is not None:
+                issued_day = issued_at // 1440
+                current_day = state.sim_minutes // 1440
+                if issued_day < current_day:
+                    state.order_days.add(issued_day)
+                    self._logger.info(
+                        "cross-day order fix: take_order issued day %d, completed day %d, "
+                        "added day %d to order_days",
+                        issued_day, current_day, issued_day)
+
             # 构造一个最小 result 用于 update_after_action
-            pseudo_result = {"simulation_progress_minutes": state.sim_minutes}
+            # 注意：对于 take_order，必须标记 accepted=True，否则 order_days 不会被更新
+            pseudo_result: dict[str, Any] = {"simulation_progress_minutes": state.sim_minutes}
+            if action_name == "take_order":
+                pseudo_result["accepted"] = True
+                # P1 fix: 传入 pickup_deadhead_km 以正确累计空驶里程
+                pickup_km = float(prev_action.get("_pickup_km", 0.0))
+                if pickup_km > 0:
+                    pseudo_result["pickup_deadhead_km"] = pickup_km
             self._tracker.update_after_action(state, prev_action, pseudo_result)
+
+            # 补偿完成后再做跨天检测：此时 order_days 已经包含前一步的接单信息
+            self._tracker.check_day_rollover(state)
+
+            # 修复跨天 streak 污染：如果 pending action 是 wait 且跨天了，
+            # 评测系统按自然日边界切割 wait，跨天 streak 不算当天 rest，必须重置。
+            if action_name == "wait":
+                duration = int(prev_action.get("params", {}).get("duration_minutes", 0))
+                wait_start = state.sim_minutes - duration
+                wait_start_day = wait_start // 1440
+                wait_end_day = state.sim_minutes // 1440
+                if wait_start_day < wait_end_day:
+                    # wait 跨天了：只有当天的部分可计入 longest_rest_today
+                    today_start = wait_end_day * 1440
+                    today_portion = state.sim_minutes - today_start
+                    state.longest_rest_today = today_portion
+                    state.rest_satisfied_today = False
+                    self._logger.info(
+                        "cross-day wait correction: streak=%d but today_portion=%d, "
+                        "longest_rest_today reset to %d",
+                        state.current_rest_streak, today_portion, state.longest_rest_today)
 
         # 首次调用时：解析偏好 → 注册配置 → 重建历史
         if driver_id not in self._initialized:
             self._first_step_init(driver_id, status, state)
             self._initialized.add(driver_id)
+
+        # 动态偏好解锁检测：某些偏好有时间窗口（start_time/end_time），
+        # 仿真引擎只在当前仿真时间落入窗口时才返回该偏好。
+        # 如果当前返回的 preferences 数量比上次多，说明有新偏好解锁，需重新解析。
+        current_prefs = status.get("preferences", [])
+        prev_count = self._known_pref_count.get(driver_id, 0)
+        if len(current_prefs) > prev_count:
+            self._logger.warning(
+                "NEW PREFERENCES UNLOCKED for %s: %d -> %d, re-parsing config",
+                driver_id, prev_count, len(current_prefs))
+            self._reparse_preferences(driver_id, status, state)
+        self._known_pref_count[driver_id] = len(current_prefs)
 
         config = get_config(driver_id)
 
@@ -118,30 +182,38 @@ class ModelDecisionService:
         action: dict[str, Any] | None = None
 
         if schedule.action == ScheduleAction.REST:
-            action = self._make_wait(schedule.wait_minutes)
+            # 使用 _make_batch_wait 允许最多 480min，避免截断大粒度休息
+            action = self._make_batch_wait(schedule.wait_minutes)
 
         elif schedule.action == ScheduleAction.OFF_DAY:
             # Off-day 一次性等待更长，减少步骤
             action = self._make_batch_wait(schedule.wait_minutes)
 
         elif schedule.action == ScheduleAction.GO_HOME:
-            action = self._make_reposition(config.home_pos[0], config.home_pos[1])
+            action = self._make_reposition(
+                config.home_pos[0], config.home_pos[1],
+                state.current_lat, state.current_lng)
 
         elif schedule.action == ScheduleAction.REPOSITION:
             if schedule.target_pos:
-                action = self._make_reposition(schedule.target_pos[0], schedule.target_pos[1])
+                action = self._make_reposition(
+                    schedule.target_pos[0], schedule.target_pos[1],
+                    state.current_lat, state.current_lng)
             else:
                 action = self._make_wait(30)
 
         elif schedule.action == ScheduleAction.FAMILY_EVENT:
-            action = self._make_wait(schedule.wait_minutes)
+            # 家事等待可能很长（如在家休息到事件结束），使用 batch wait
+            action = self._make_batch_wait(schedule.wait_minutes)
 
         else:
             # 5. WORK 模式：查询货源、过滤、评分、决策
             action = self._work_mode(driver_id, state, config, status)
 
         # 缓存本步 action，下次 decide 时用于补偿更新 state
+        # 同时记录发出时间戳，用于跨天 take_order 的 order_days 补偿
         self._pending_action[driver_id] = action
+        self._pending_issued_at[driver_id] = state.sim_minutes
         return action
 
     # =========================================================================
@@ -193,6 +265,49 @@ class ModelDecisionService:
                 self._logger.info(
                     "HotspotTracker cold start: seeded with driver initial pos (%.4f, %.4f)",
                     state.current_lat, state.current_lng)
+
+    def _reparse_preferences(self, driver_id: str, status: dict[str, Any],
+                              state: DriverState) -> None:
+        """动态重新解析偏好（当检测到新偏好解锁时调用）。
+
+        只更新偏好相关的配置字段（family_event、special_cargo 等），
+        不重置运行时状态（rest_calendar、off_day 等）。
+        """
+        # 清除偏好解析器缓存，强制重新解析
+        if driver_id in self._parser._cache:
+            del self._parser._cache[driver_id]
+
+        parsed = self._parser.parse(status, self._api)
+        self._budget.record_usage("reparse", 2000)
+
+        self._logger.info(
+            "re-parsed preferences for %s: rest=%d quiet=%d forbidden=%d "
+            "go_home=%d special=%d family=%d visit=%d custom=%d",
+            driver_id,
+            len(parsed.rest_constraints),
+            len(parsed.quiet_windows),
+            len(parsed.forbidden_categories),
+            len(parsed.go_home),
+            len(parsed.special_cargos),
+            len(parsed.family_events),
+            len(parsed.visit_targets),
+            len(parsed.custom),
+        )
+
+        # 重建完整配置（包含新解锁的偏好）
+        new_config = build_config_from_parsed(parsed)
+        speed_kmph = float(status.get("reposition_speed_km_per_hour", 48.0))
+        new_config.reposition_speed_kmpm = speed_kmph / 60.0
+
+        # 从旧配置中保留运行时状态（不丢失已初始化的休息日历等）
+        old_config = get_config(driver_id)
+        if old_config:
+            # 保留已规划的休息日历和 off-day 规划
+            # （这些在 schedule_planner._init_rest_calendar 中初始化）
+            pass  # rest_calendar 存在 DriverState 中，不在 config 中
+
+        register_config(driver_id, new_config)
+        self._logger.info("config updated for %s after preference unlock", driver_id)
 
     def _init_from_history(self, driver_id: str, state: DriverState) -> None:
         """从历史记录重建状态，并提取货源模式种子 HotspotTracker。"""
@@ -287,6 +402,129 @@ class ModelDecisionService:
         """正常工作模式：查货 → 过滤 → 评分 → 智能决策。"""
         params = self._advisor.get_params(driver_id)
 
+        # 安静窗口前瞻保护：如果当前时间 + 预估 scan_cost 会进入安静窗口，
+        # 直接返回 REST 而不是进入查询流程（query_cargo 会推进仿真时间）
+        if config.quiet_window:
+            scan_cost_estimate = SCAN_COST_MINUTES + 5  # 保守估计（基准 + 小幅富余）
+            projected_time = state.sim_minutes + scan_cost_estimate
+            if config.quiet_window.is_active(projected_time):
+                remaining = config.quiet_window.minutes_until_end(projected_time)
+                self._logger.info(
+                    "quiet window lookahead: projected time %d in quiet window, rest %dmin",
+                    projected_time, remaining)
+                return self._make_batch_wait(min(remaining, 480))
+
+        # 家事 deadline 保护：确保有足够时间回家，考虑接单执行时间
+        if config.family_event and state.family_phase == "idle":
+            fe = config.family_event
+            if state.sim_minutes < fe.trigger_min:
+                # 计算到第一个途经点或家的全链路行程时间
+                waypoints = fe.waypoints or []
+                first_wp = waypoints[0] if waypoints else None
+                target_pos = (
+                    (float(first_wp["lat"]), float(first_wp["lng"]))
+                    if first_wp else fe.home_pos
+                )
+                dist_to_target = haversine_km(
+                    state.current_lat, state.current_lng,
+                    target_pos[0], target_pos[1])
+                travel_min = dist_to_target / max(config.reposition_speed_kmpm, 0.01)
+                time_budget = fe.trigger_min - state.sim_minutes
+                # 保守策略：预留回家链路时间 + 一个最坏情况订单时间（约 1500min）
+                # D010 的单最长 1362 分钟。我们预留 travel_time + 接单最大执行时间上限
+                # 如果时间预算不足以覆盖"接一单 + 再回家"，则阻止接新单
+                max_order_exec_time = 1500  # 最坏情况的单程执行时间（含 pickup + haul）
+                chain_time = travel_min + 120  # 回家链路 + 缓冲
+                if time_budget <= chain_time + max_order_exec_time:
+                    # 时间不够接一单再回家，但还够直接回家 → 等 schedule_planner 发出回家指令
+                    self._logger.info(
+                        "family deadline guard: budget=%dmin <= chain=%.0fmin + max_order=%d, blocking work",
+                        time_budget, chain_time, max_order_exec_time)
+                    return self._make_wait(min(30, max(1, int(time_budget) // 4)))
+
+        # Go-home 时间窗口保护：每天 deadline 前必须在家
+        # 评测逻辑：deadline 时位置在家 1km 内 + 安静时段无 reposition
+        # R8.4 修正：
+        #   - R8.2 消除 wait(5) 死循环 → 改为直接 reposition
+        #   - R8.3 发现 guard 在 deadline 后完全失效（time_to_deadline <= 0）
+        #     导致 D009 17 次违规。修正：deadline 后如果不在家，仍然触发回家。
+        if config.must_return_home and config.home_pos:
+            current_minutes_in_day = state.sim_minutes % 1440
+            deadline_min_in_day = config.home_deadline_hour * 60
+            time_to_deadline = deadline_min_in_day - current_minutes_in_day
+
+            dist_home = haversine_km(
+                state.current_lat, state.current_lng,
+                config.home_pos[0], config.home_pos[1])
+
+            # 已过 deadline 但不在家 → 立即回家（今天已违规，但必须回家否则明天也违规）
+            if time_to_deadline <= 0 and dist_home > 1.0:
+                self._logger.info(
+                    "go_home guard: PAST DEADLINE by %dmin, dist_home=%.1fkm, "
+                    "reposition home now to minimize damage",
+                    -time_to_deadline, dist_home)
+                return self._make_reposition(
+                    config.home_pos[0], config.home_pos[1],
+                    state.current_lat, state.current_lng)
+
+            if time_to_deadline > 0:
+                travel_home_min = dist_home / max(config.reposition_speed_kmpm, 0.01)
+                # R8.5: 动态最短一单时间（D009 平均单耗 300-600min，固定 60 严重低估）
+                # 使用历史平均值的一半作为保守估计，下限 120 分钟
+                avg_exec = getattr(state, 'avg_order_exec_time', None)
+                min_order_time = max(120, int((avg_exec or 240) * 0.5))
+                # 情况 1：连直接回家都来不及了 → 直接 reposition 回家
+                if travel_home_min + SAFETY_BUFFER_MINUTES >= time_to_deadline:
+                    self._logger.info(
+                        "go_home guard: direct home travel=%.0fmin + buffer=%d >= "
+                        "time_to_deadline=%dmin, reposition home now",
+                        travel_home_min, SAFETY_BUFFER_MINUTES, time_to_deadline)
+                    return self._make_reposition(
+                        config.home_pos[0], config.home_pos[1],
+                        state.current_lat, state.current_lng)
+                # 情况 2：剩余时间不够"做一单 + 回家" → 也直接回家
+                available_for_order = time_to_deadline - travel_home_min - SAFETY_BUFFER_MINUTES
+                if available_for_order < min_order_time:
+                    self._logger.info(
+                        "go_home guard: available_for_order=%.0fmin < %dmin, "
+                        "reposition home to ensure deadline",
+                        available_for_order, min_order_time)
+                    return self._make_reposition(
+                        config.home_pos[0], config.home_pos[1],
+                        state.current_lat, state.current_lng)
+
+        # Off-day 前一天保护：如果次日是 planned off-day，
+        # 且当前时间距次日 00:00 不足以安全完成一单（保守估计 1500min），
+        # 则提前停止接单，等到 schedule_planner 发出 off-day lock。
+        # 注意：评测系统看的是运送时间覆盖，跨天运送会导致 off-day 失效。
+        if config.monthly_off_days_required > 0:
+            next_day = state.current_day() + 1
+            if next_day in state.planned_off_days:
+                minutes_to_midnight = 1440 - (state.sim_minutes % 1440)
+                # 保守策略：如果距次日 00:00 不足 720min（12h），停止接单
+                # 长途单运输时间可达 24-36h，但 rule_engine 的 rest 前瞻已过滤跨天单
+                # 720min 在过滤基础上提供额外保护，同时不过度牺牲接单时间
+                if minutes_to_midnight <= 720:
+                    self._logger.info(
+                        "off-day guard: tomorrow(day %d) is planned off-day, "
+                        "%dmin to midnight, blocking work",
+                        next_day, minutes_to_midnight)
+                    return self._make_wait(min(minutes_to_midnight, 240))
+
+        # 步骤合并：连续无货且非高峰时段时跳过查询，直接大粒度等待
+        idle_steps = self._steps_without_order.get(driver_id, 0)
+        if idle_steps >= 4:
+            hour = state.hour_in_day()
+            is_peak = any(start <= hour <= end for start, end in params.peak_hours)
+            if not is_peak:
+                # 连续无货达到阈值且非高峰 → 直接大粒度等待，跳过整个查询链路
+                merged_wait = self._compute_merged_wait(state, params, idle_steps)
+                self._logger.info(
+                    "no-cargo step merge: idle=%d, skip query, wait=%dmin",
+                    idle_steps, merged_wait)
+                self._steps_without_order[driver_id] = idle_steps + 1
+                return self._make_batch_wait(merged_wait)
+
         # 阶段 1: 查询 & 过滤
         scored = self._query_filter_and_score(driver_id, state, config, params)
 
@@ -308,26 +546,26 @@ class ModelDecisionService:
         llm_action = self._try_llm_enhanced(
             driver_id, state, config, params, scored)
         if llm_action is not None:
-            # 检查是否需要插入休息（装货等待期利用）
             if llm_action.get("action") == "take_order":
+                # 检查是否需要插入休息（装货等待期利用）
                 pre_rest = self._maybe_pre_rest_for_load_wait(
                     llm_action, scored, state, config)
                 if pre_rest is not None:
                     return pre_rest
-            return llm_action
+            return self._attach_pickup_km(llm_action, scored)
 
         # 阶段 3: 纯规则决策
         action = self._rule_based_decision(
             driver_id, state, config, params, scored, avg_recent)
 
-        # 检查是否需要插入休息（装货等待期利用）
         if action.get("action") == "take_order":
+            # 检查是否需要插入休息（装货等待期利用）
             pre_rest = self._maybe_pre_rest_for_load_wait(
                 action, scored, state, config)
             if pre_rest is not None:
                 return pre_rest
 
-        return action
+        return self._attach_pickup_km(action, scored)
 
     # ----- 子流程 1: 查询、过滤、评分 -----
 
@@ -503,6 +741,20 @@ class ModelDecisionService:
 
         # 低分：判断等待 vs 勉强接
         wait_value = self._compute_smart_wait_value(state, config, avg_recent, params)
+
+        # P2 fix: 首单 deadline 紧迫时强制降低等待价值，避免无止境等待
+        if (config.first_order_deadline_hour is not None
+                and state.today_first_order_minute is None):
+            hour = state.hour_in_day()
+            hours_past_deadline = hour - config.first_order_deadline_hour
+            if hours_past_deadline > 0:
+                # 已过 deadline：线性压低 wait_value，最多压到 -50
+                decay = min(1.0, hours_past_deadline / 4.0)
+                wait_value = wait_value * (1 - decay) + (-50) * decay
+                self._logger.info(
+                    "first-order deadline override: %dh past, wait_value=%.2f",
+                    hours_past_deadline, wait_value)
+
         if wait_value > best.score:
             self._logger.info("wait (score=%.2f < wait_value=%.2f)", best.score, wait_value)
             self._steps_without_order[driver_id] = (
@@ -553,7 +805,25 @@ class ModelDecisionService:
           2. HotspotTracker 有数据
           3. 最近热点距离在 [min_km, max_km] 范围内
           4. 空驶不会超出月度空驶配额
+          5. 当天不是 off-day 候选（reposition 会破坏 off-day 判定）
         """
+        # off-day 保护：如果当天是预规划的 off-day 或 off-day 候选，
+        # 不做 reposition 以免破坏 off-day 判定
+        if (config.monthly_off_days_required > 0
+                and not state.today_has_repositioned
+                and state.today_order_count == 0):
+            current_day = state.current_day()
+            off_days_done = len(state.off_days)
+            if off_days_done < config.monthly_off_days_required:
+                # 预规划的 off-day 当天绝对不 reposition
+                if current_day in state.planned_off_days:
+                    return None
+                # 紧急情况：剩余天数不够时也不 reposition
+                remaining_days = 31 - current_day
+                off_days_needed = config.monthly_off_days_required - off_days_done
+                if remaining_days <= off_days_needed + 1:
+                    return None
+
         idle_steps = self._steps_without_order.get(driver_id, 0)
         if idle_steps < _HOTSPOT_IDLE_STEPS_THRESHOLD:
             return None
@@ -584,12 +854,42 @@ class ModelDecisionService:
             if remaining < best_dist * 1.5:  # 留余量
                 return None
 
-        self._logger.info(
-            "hotspot reposition: idle %d steps, moving %.1fkm to (%.4f,%.4f)",
-            idle_steps, best_dist, best_hs[0], best_hs[1])
-        return self._make_reposition(best_hs[0], best_hs[1])
+        # 时间可行性校验：确保以当前速度能在合理步骤时间内完成行驶
+        # 仿真引擎会校验 action_exec_cost 与实际行驶距离的一致性
+        travel_minutes = best_dist / max(config.reposition_speed_kmpm, 0.01)
+        if travel_minutes > 480:
+            # 超长距离空驶不划算且可能触发时间不一致校验
+            return None
 
-    # ----- 子流程 6: 装货等待期休息插入 -----
+        # 禁区校验：reposition 目标不能在禁区内
+        if config.forbidden_zone:
+            center = config.forbidden_zone["center"]
+            radius = config.forbidden_zone["radius_km"]
+            if haversine_km(best_hs[0], best_hs[1], center[0], center[1]) <= radius:
+                self._logger.info(
+                    "hotspot reposition blocked: target (%.4f,%.4f) inside forbidden zone",
+                    best_hs[0], best_hs[1])
+                return None
+
+        # 安静窗口推演：检查 reposition 是否会跨入安静窗口
+        # 注意：state.sim_minutes 是 step_start，实际 action_start = step_start + scan_cost
+        # 这里加 10 分钟保守估计 scan_cost（评测用真实 scan_cost）
+        if config.quiet_window:
+            scan_cost_estimate = SCAN_COST_MINUTES
+            action_start = state.sim_minutes + scan_cost_estimate
+            action_end = action_start + int(travel_minutes)
+            if self._rule_engine._overlaps_quiet_window(
+                    action_start, action_end, config.quiet_window):
+                self._logger.info(
+                    "hotspot reposition blocked: would overlap quiet window")
+                return None
+
+        self._logger.info(
+            "hotspot reposition: idle %d steps, moving %.1fkm (~%.0fmin) to (%.4f,%.4f)",
+            idle_steps, best_dist, travel_minutes, best_hs[0], best_hs[1])
+        return self._make_reposition(best_hs[0], best_hs[1], lat, lng)
+
+    # ----- 子流程 7: 装货等待期休息插入 -----
 
     def _maybe_pre_rest_for_load_wait(
         self, take_action: dict[str, Any],
@@ -680,6 +980,34 @@ class ModelDecisionService:
 
         return max(params.min_wait_minutes, min(240, base_wait))
 
+    def _compute_merged_wait(self, state: DriverState, params: StrategyParams,
+                             idle_steps: int) -> int:
+        """连续无货时的大粒度合并等待，跳过查询直接休眠。
+
+        策略：
+          - 深夜 (22~5点): 直接等到早高峰，最多 480min
+          - 白天非高峰: 按 idle_steps 递增，60~240min
+          - 刚脱离高峰: 保守 45~90min（高峰刚结束可能恢复）
+        """
+        hour = state.hour_in_day()
+
+        if hour >= 22 or hour <= 5:
+            # 深夜: 等到明早高峰起始
+            if hour >= 22:
+                minutes_to_peak = (24 - hour + 8) * 60
+            else:
+                minutes_to_peak = (8 - hour) * 60
+            return min(480, max(120, minutes_to_peak))
+
+        # 白天非高峰: 递增式合并
+        # idle_steps=4 → 60min, 5→90, 6→120, 7→150... 上限240
+        merged = min(240, 30 + idle_steps * 30)
+
+        # 激进模式稍微缩短
+        merged = int(merged * (1 - params.aggression * 0.3))
+
+        return max(45, merged)
+
     def _compute_smart_wait_value(self, state: DriverState, config: DriverConfig,
                                   avg_score_recent: float, params: StrategyParams) -> float:
         """增强版等待价值估算：结合供给预测器和历史均分。"""
@@ -754,10 +1082,53 @@ class ModelDecisionService:
             cargos.append(cargo_copy)
         return cargos
 
-    def _make_take_order(self, cargo_id: str) -> dict[str, Any]:
-        return {"action": "take_order", "params": {"cargo_id": cargo_id}}
+    def _make_take_order(self, cargo_id: str, pickup_km: float = 0.0) -> dict[str, Any]:
+        action: dict[str, Any] = {"action": "take_order", "params": {"cargo_id": cargo_id}}
+        if pickup_km > 0:
+            action["_pickup_km"] = pickup_km
+        return action
 
-    def _make_reposition(self, lat: float, lng: float) -> dict[str, Any]:
+    @staticmethod
+    def _attach_pickup_km(action: dict[str, Any],
+                          scored: list["ScoredCargo"]) -> dict[str, Any]:
+        """为 take_order 动作附加 _pickup_km 元数据，供 pending 补偿时追踪空驶。"""
+        if action.get("action") != "take_order":
+            return action
+        if "_pickup_km" in action:
+            return action  # 已设置
+        cargo_id = str(action.get("params", {}).get("cargo_id", ""))
+        for sc in scored:
+            if str(sc.cargo.get("cargo_id", "")) == cargo_id:
+                action["_pickup_km"] = sc.pickup_km
+                return action
+        return action
+
+    def _make_reposition(self, lat: float, lng: float,
+                         current_lat: float = 0.0, current_lng: float = 0.0) -> dict[str, Any]:
+        """生成 reposition 动作，含安全防护。
+
+        防护逻辑：
+          1. 坐标全零 → 退化为等待
+          2. 已在目标附近(< 2km) → 退化为等待（避免短距离精度问题）
+          3. 坐标 round(2) 对齐：确保 Agent 传出的坐标与结果文件序列化精度一致，
+             避免评测脚本用 round 后坐标重算距离导致 ceil 差 1 分钟的 validation error
+
+        注意：安静窗口推演由调用方负责（rule_engine 过滤 take_order，
+              _try_hotspot_reposition 过滤主动空驶）。
+              GO_HOME / FAMILY_EVENT 等必要空驶不在此处阻止。
+        """
+        # 对齐精度：结果文件序列化时会 round 到 2 位小数
+        lat = round(lat, 2)
+        lng = round(lng, 2)
+        if lat == 0.0 and lng == 0.0:
+            return self._make_wait(30)
+        # 如果提供了当前坐标且已接近目标，不做无意义的 reposition
+        # R8.4: 阈值从 2km 降到 0.5km，避免 go_home 场景中 1-2km 距离反复 wait(10)
+        # 评测判定到家需要 1km 内，所以 0.5km 阈值确保已经"到家"
+        if current_lat != 0.0 or current_lng != 0.0:
+            dist = haversine_km(current_lat, current_lng, lat, lng)
+            if dist < 0.5:
+                return self._make_wait(10)
         return {"action": "reposition", "params": {"latitude": lat, "longitude": lng}}
 
     def _make_wait(self, minutes: int) -> dict[str, Any]:

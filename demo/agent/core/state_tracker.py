@@ -64,6 +64,18 @@ class DriverState:
     # 熟货追踪
     special_cargo_taken: bool = False
 
+    # off-day 活动追踪（D006/D008 评测要求当天 take_order + reposition 均为 0）
+    today_has_repositioned: bool = False
+
+    # 月度休息日历（首次 decide 时一次性规划）
+    planned_off_days: set[int] = field(default_factory=set)  # 预规划的 off-day 日期（day index）
+    rest_calendar_initialized: bool = False  # 是否已初始化休息日历
+
+    # 订单执行时间追踪（用于 go_home guard 动态 min_order_time）
+    _order_exec_total_min: float = 0.0  # 累计订单执行时间
+    _order_exec_count: int = 0          # 累计完成订单数
+    avg_order_exec_time: float | None = None  # 滑动平均（None = 无历史数据）
+
     # 通用
     step_count: int = 0
     total_tokens_used: int = 0
@@ -93,15 +105,26 @@ class StateTracker:
             self._states[driver_id] = DriverState(driver_id=driver_id)
         return self._states[driver_id]
 
-    def init_from_status(self, driver_id: str, status: dict[str, Any]) -> DriverState:
-        """从 get_driver_status 返回值初始化/更新状态。"""
+    def init_from_status(self, driver_id: str, status: dict[str, Any],
+                         skip_rollover: bool = False) -> DriverState:
+        """从 get_driver_status 返回值初始化/更新状态。
+
+        Args:
+            skip_rollover: 如果为 True，跳过跨天检测。调用方需要在完成
+                pending_action 补偿后手动调用 check_day_rollover()。
+        """
         state = self.get_state(driver_id)
         state.sim_minutes = int(status.get("simulation_progress_minutes", 0))
         state.current_lat = float(status.get("current_lat", 0.0))
         state.current_lng = float(status.get("current_lng", 0.0))
         state.cost_per_km = float(status.get("cost_per_km", state.cost_per_km))
-        self._check_day_rollover(state)
+        if not skip_rollover:
+            self._check_day_rollover(state)
         return state
+
+    def check_day_rollover(self, state: DriverState) -> None:
+        """公开的跨天检测接口，供 decide() 在 pending_action 补偿后调用。"""
+        self._check_day_rollover(state)
 
     def rebuild_from_history(self, driver_id: str, records: list[dict[str, Any]]) -> DriverState:
         """从 query_decision_history 的全量记录重建状态。"""
@@ -127,6 +150,10 @@ class StateTracker:
             state.longest_rest_today = max(state.longest_rest_today, state.current_rest_streak)
             # 更新上次休息结束时刻（用于连续工作安全保护）
             state.last_rest_end_min = state.sim_minutes
+        elif action_name == "take_order" and result.get("accepted") is False:
+            # 明确标记为失败的 take_order（货物已失效等）不打断休息连续性
+            # 注意：用 `is False` 而非 `not result.get(...)` 以区分缺失字段 vs 明确失败
+            pass
         else:
             # 非 wait 动作打断休息连续性
             state.current_rest_streak = 0
@@ -137,6 +164,7 @@ class StateTracker:
             distance = float(result.get("distance_km", 0.0))
             state.total_distance_km += distance
             state.total_deadhead_km += distance
+            state.today_has_repositioned = True
 
         elif action_name == "take_order":
             accepted = bool(result.get("accepted", False))
@@ -168,6 +196,15 @@ class StateTracker:
                 if state.today_first_order_minute is None:
                     state.today_first_order_minute = state.sim_minutes
 
+                # 订单执行时间追踪（用于 go_home guard 动态 min_order_time）
+                exec_time = float(result.get("action_exec_cost_minutes",
+                                             result.get("round_cost_min", 0)))
+                if exec_time > 0:
+                    state._order_exec_total_min += exec_time
+                    state._order_exec_count += 1
+                    state.avg_order_exec_time = (
+                        state._order_exec_total_min / state._order_exec_count)
+
                 # 特殊货源追踪（从 DriverConfig 获取目标 cargo_id）
                 from agent.config.driver_config import get_config
                 cfg = get_config(state.driver_id)
@@ -181,6 +218,8 @@ class StateTracker:
 
     def _check_day_rollover(self, state: DriverState) -> None:
         """检测日期变化，重置每日统计。"""
+        import logging
+        _log = logging.getLogger("agent.state_tracker")
         current_day = state.current_day()
         if current_day != state._last_day:
             if state._last_day == -1:
@@ -188,12 +227,28 @@ class StateTracker:
                 state._last_day = current_day
                 return
             # 真正的跨天：检查前一天是否为 off day
-            if state._last_day not in state.order_days:
+            # 区分两种口径：
+            #   - 口径 A（D002/D007）：当天无成交接单即算 off-day
+            #   - 口径 B（D006/D008）：当天 take_order + reposition 活动分钟均为 0
+            # 统一使用更严格的口径 B：同时要求无接单 + 无空驶
+            # 这不会影响口径 A 的司机（因为 off-day 当天本身就不会做 reposition）
+            is_off = (state._last_day not in state.order_days
+                      and not state.today_has_repositioned)
+            _log.info(
+                "DAY ROLLOVER: %s day %d->%d, order_days=%s, repos=%s, is_off=%s, off_days=%s",
+                state.driver_id, state._last_day, current_day,
+                state.order_days, state.today_has_repositioned, is_off, state.off_days)
+            if is_off:
                 state.off_days.add(state._last_day)
             state._last_day = current_day
             state.today_order_count = 0
             state.today_first_order_minute = None
-            state.longest_rest_today = state.current_rest_streak  # 延续跨天的休息
+            state.today_has_repositioned = False
+            # 跨天时 longest_rest_today 重置为 0，而非延续 current_rest_streak。
+            # 原因：评测系统按自然日边界切割 wait interval，跨天延续的 streak
+            # 不会被完整计入新一天。如果设为 streak 值，会导致 schedule_planner
+            # 误认为新一天已满足休息需求而跳过 rest。
+            state.longest_rest_today = 0
             state.rest_satisfied_today = False
 
     def _check_visit_target(self, state: DriverState) -> None:
@@ -230,6 +285,7 @@ class StateTracker:
             dist = float(result.get("distance_km", 0.0))
             state.total_distance_km += dist
             state.total_deadhead_km += dist
+            state.today_has_repositioned = True
 
         elif action_name == "take_order" and bool(result.get("accepted", False)):
             pickup_km = float(result.get("pickup_deadhead_km", 0.0))

@@ -15,6 +15,7 @@ from typing import Any
 
 from agent.config.driver_config import DriverConfig, QuietWindow, FamilyEvent, get_config
 from agent.core.state_tracker import DriverState, haversine_km
+from agent.core.timeline_projector import SAFETY_BUFFER_MINUTES, SCAN_COST_MINUTES
 
 
 class ScheduleAction(str, Enum):
@@ -55,10 +56,26 @@ class SchedulePlanner:
     def plan(self, state: DriverState, config: DriverConfig) -> ScheduleDecision:
         """根据当前状态和配置，返回本步应执行的调度决策。"""
 
+        # 初始化月度休息日历（首次调用时执行一次）
+        if not state.rest_calendar_initialized:
+            self._init_rest_calendar(state, config)
+
         # 0) 安全保护：连续工作时间过长强制休息（适用于所有司机）
         safety_rest = self._check_continuous_work_safety(state, config)
         if safety_rest:
             return safety_rest
+
+        # 0.5) Off-day 全局锁：预规划的 off-day 当天，锁死为 wait
+        #      优先级极高，仅家事状态机可覆盖（家事是定时触发不可延迟的）
+        if config.monthly_off_days_required > 0:
+            off_lock = self._handle_off_day_lock(state, config)
+            if off_lock:
+                # 家事可以打断 off-day（家事罚分 9000+ 远超 off-day 罚分）
+                if config.family_event:
+                    family_decision = self._handle_family_event(state, config)
+                    if family_decision:
+                        return family_decision
+                return off_lock
 
         # 1) 家事状态机优先级最高
         if config.family_event:
@@ -91,24 +108,44 @@ class SchedulePlanner:
                         priority=90,
                     )
             remaining = config.quiet_window.minutes_until_end(state.sim_minutes)
+            # 一次性 wait 到安静窗口结束，避免中间 scan_cost 被评测计为活跃
+            # 上限 480 分钟（仿真引擎 wait 上限）
             return ScheduleDecision(
                 action=ScheduleAction.REST,
-                reason=f"安静窗口中，剩余{remaining}分钟",
-                wait_minutes=min(remaining, 60),
+                reason=f"安静窗口中，一次性等待{min(remaining, 480)}分钟",
+                wait_minutes=min(remaining, 480),
                 priority=90,
             )
 
-        # 4) 每日休息未满足 → 安排休息（在建议休息时段内）
+        # 3.5) 安静窗口即将开始 → 提前 REST（避免发起无法在窗口前完成的动作）
+        #      R8.4: 前瞻时间增加 SCAN_COST_MINUTES，因为 query_cargo 会推进仿真时间
+        if config.quiet_window and not config.quiet_window.is_active(state.sim_minutes):
+            minutes_to_start = self._minutes_until_quiet_start(state.sim_minutes, config.quiet_window)
+            if 0 < minutes_to_start <= SAFETY_BUFFER_MINUTES + SCAN_COST_MINUTES:
+                return ScheduleDecision(
+                    action=ScheduleAction.REST,
+                    reason=f"安静窗口{minutes_to_start}分钟后开始，提前休息",
+                    wait_minutes=minutes_to_start,
+                    priority=85,
+                )
+
+        # 3.8) 首单 deadline 催促：deadline 临近但今天还没接单，优先接单
+        if config.first_order_deadline_hour is not None:
+            first_order_decision = self._handle_first_order_deadline(state, config)
+            if first_order_decision:
+                return first_order_decision
+
+        # 4) 每日连续休息（大粒度一步到位）
         if config.min_continuous_rest_minutes > 0:
             rest_decision = self._handle_daily_rest(state, config)
             if rest_decision:
                 return rest_decision
 
-        # 5) Off-day 规划：月底需保证 off_days 数量
-        if config.monthly_off_days_required > 0:
-            off_decision = self._handle_off_day(state, config)
-            if off_decision:
-                return off_decision
+        # 5) 特殊货源提前空驶：在上架时间前移动到装货点附近
+        if config.special_cargo and not state.special_cargo_taken:
+            special_decision = self._handle_special_cargo_approach(state, config)
+            if special_decision:
+                return special_decision
 
         # 6) 到访目标点
         if config.visit_target and len(state.visit_target_days) < config.visit_days_required:
@@ -172,19 +209,26 @@ class SchedulePlanner:
         )
         first_wp_wait = int(first_waypoint.get("wait_minutes", 10)) if first_waypoint else 0
 
-        # 家事尚未触发
+        # 家事尚未触发 — 动态计算提前出发窗口
         if state.sim_minutes < fe.trigger_min:
-            # 提前 60 分钟准备去第一个途经点
-            if state.sim_minutes >= fe.trigger_min - 60 and state.family_phase == "idle":
+            if state.family_phase == "idle":
                 dist_to_wp = haversine_km(
                     state.current_lat, state.current_lng,
                     first_wp_pos[0], first_wp_pos[1])
-                travel_min = dist_to_wp / config.reposition_speed_kmpm
-                if travel_min >= 30:
+                travel_min = dist_to_wp / max(config.reposition_speed_kmpm, 0.01)
+                # 全链路时间估算：去途经点 + 等待 + 去家 + 缓冲
+                dist_wp_to_home = haversine_km(
+                    first_wp_pos[0], first_wp_pos[1],
+                    fe.home_pos[0], fe.home_pos[1])
+                travel_wp_to_home = dist_wp_to_home / max(config.reposition_speed_kmpm, 0.01)
+                total_chain_min = travel_min + first_wp_wait + travel_wp_to_home + 120  # 120min 缓冲
+                # 如果行程链总时间 >= 剩余时间，立即出发
+                time_to_trigger = fe.trigger_min - state.sim_minutes
+                if time_to_trigger <= total_chain_min:
                     state.family_phase = "go_spouse"
                     return ScheduleDecision(
                         action=ScheduleAction.REPOSITION,
-                        reason="提前移动到途经点",
+                        reason=f"家事提前出发（链路需{total_chain_min:.0f}min，剩余{time_to_trigger}min）",
                         target_pos=first_wp_pos,
                         priority=85,
                     )
@@ -244,28 +288,31 @@ class SchedulePlanner:
                                 fe.home_pos[0], fe.home_pos[1])
             if dist <= 1.0:
                 state.family_phase = "at_home"
+                remaining = fe.end_min - state.sim_minutes
                 return ScheduleDecision(
-                    action=ScheduleAction.REST,
-                    reason="已到家，家事期间在家休息",
-                    wait_minutes=60,
+                    action=ScheduleAction.FAMILY_EVENT,
+                    reason=f"已到家，家事期间在家休息（剩{remaining}min）",
+                    wait_minutes=min(480, max(remaining, 1)),
                     priority=90,
                 )
             return ScheduleDecision(
-                action=ScheduleAction.REPOSITION,
-                reason="前往家中",
-                target_pos=fe.home_pos,
-                priority=95,
-            )
+                    action=ScheduleAction.REPOSITION,
+                    reason="前往家中",
+                    target_pos=fe.home_pos,
+                    priority=95,
+                )
 
         if state.family_phase == "at_home":
             # 家事期间如果结束时间到了则标记完成
             if state.sim_minutes >= fe.end_min:
                 state.family_phase = "done"
                 return None
+            remaining = fe.end_min - state.sim_minutes
+            # 使用大粒度等待（最大 480min / _make_batch_wait 上限），减少步骤浪费
             return ScheduleDecision(
-                action=ScheduleAction.REST,
-                reason="家事期间在家休息",
-                wait_minutes=min(60, fe.end_min - state.sim_minutes),
+                action=ScheduleAction.FAMILY_EVENT,
+                reason=f"家事期间在家休息（剩{remaining}min）",
+                wait_minutes=min(480, remaining),
                 priority=90,
             )
 
@@ -291,33 +338,90 @@ class SchedulePlanner:
                     priority=85,
                 )
             else:
-                return ScheduleDecision(
-                    action=ScheduleAction.GO_HOME,
-                    reason="夜间必须在家",
-                    target_pos=config.home_pos,
-                    priority=90,
-                )
+                # R8.4 修正：安静时段不在家，需权衡两种罚分：
+                #   go_home 违规 = 900/天（高罚分），quiet 安静窗口空驶违规 = 200-500/次
+                # 如果距家较近（< 4h 行程），立即回家虽然安静期 reposition 违规一次，
+                # 但到家后明天就不再 go_home 违规。如果太远则就地等待。
+                if travel_min <= 240:  # 4小时内能到家
+                    return ScheduleDecision(
+                        action=ScheduleAction.GO_HOME,
+                        reason=f"安静时段不在家，紧急回家（路程{travel_min:.0f}min，接受一次安静期违规以减少回家违规）",
+                        target_pos=config.home_pos,
+                        priority=92,
+                    )
+                else:
+                    return ScheduleDecision(
+                        action=ScheduleAction.REST,
+                        reason=f"错过回家 deadline 且距家太远（{travel_min:.0f}min），就地休息等待安静时段结束",
+                        wait_minutes=60,
+                        priority=90,
+                    )
 
         # 判断是否需要提前出发
         deadline_minutes_in_day = config.home_deadline_hour * 60
         current_minutes_in_day = state.sim_minutes % 1440
         time_to_deadline = deadline_minutes_in_day - current_minutes_in_day
 
-        if time_to_deadline > 0 and travel_min >= time_to_deadline - 30:
-            # 需要立即出发才能赶上
+        if time_to_deadline > 0 and travel_min + SAFETY_BUFFER_MINUTES >= time_to_deadline:
+            # 需要立即出发才能赶上（+SAFETY_BUFFER 覆盖 scan_cost + ceil 误差 + 路径偏差）
             return ScheduleDecision(
                 action=ScheduleAction.GO_HOME,
-                reason=f"需提前出发回家，路程约{travel_min:.0f}分钟",
+                reason=f"需提前出发回家，路程约{travel_min:.0f}分钟（含安全余量）",
                 target_pos=config.home_pos,
                 priority=80,
             )
 
         return None
 
-    def _handle_daily_rest(self, state: DriverState, config: DriverConfig) -> ScheduleDecision | None:
-        """每日连续休息约束。
+    def _handle_first_order_deadline(self, state: DriverState,
+                                        config: DriverConfig) -> ScheduleDecision | None:
+        """首单 deadline 催促：deadline 临近但今天还没接单时，强制进入 WORK 模式。
 
-        优化：一次性输出剩余全部休息时长（最大120分钟），减少碎片化步骤。
+        策略：
+          - 今天已经接了首单 → 无需催促
+          - 距 deadline 不足 2 小时 → 强制 WORK，覆盖其他低优先级的 rest/off-day
+          - 已过 deadline → 也强制 WORK（赶紧接单减少损失）
+        """
+        if state.today_first_order_minute is not None:
+            return None  # 今天已接到首单
+
+        hour = state.hour_in_day()
+        deadline_hour = config.first_order_deadline_hour
+
+        # 计算距 deadline 的小时数
+        hours_to_deadline = deadline_hour - hour
+
+        # 已过 deadline：赶紧接单
+        if hours_to_deadline < 0:
+            return ScheduleDecision(
+                action=ScheduleAction.WORK,
+                reason=f"首单已超 deadline（{deadline_hour}:00），紧急寻货",
+                priority=75,
+            )
+
+        # 距 deadline 不足 2 小时：催促接单，覆盖低优先级 rest
+        if hours_to_deadline <= 2:
+            return ScheduleDecision(
+                action=ScheduleAction.WORK,
+                reason=f"首单 deadline {deadline_hour}:00 临近（剩{hours_to_deadline:.1f}h），优先接单",
+                priority=72,
+            )
+
+        return None
+
+    def _handle_daily_rest(self, state: DriverState, config: DriverConfig) -> ScheduleDecision | None:
+        """每日连续休息约束 — 大粒度一步到位。
+
+        核心改进：一旦决定休息，直接输出整个所需时长的 wait（最大 480min），
+        避免分步累加被中间的高优先级动作打断导致连续性归零。
+
+        评测规则：wait 动作合并后取最长连续段，query_cargo 不打断。
+        所以只要输出足够长的单个 wait，评测必定满足。
+
+        三阶段策略：
+          1. 建议窗口：在配置的休息时段内开始，一步输出全部所需时长
+          2. 错过窗口补偿：已过建议窗口但仍未休息够，立即补偿
+          3. 紧急补偿：临近日终仍未满足时，强制输出全部所需时长
         """
         # 仅平日要求
         if config.rest_weekday_only and not state.is_weekday():
@@ -328,85 +432,306 @@ class SchedulePlanner:
             state.rest_satisfied_today = True
             return None
 
-        # 在建议休息时段内且休息尚未满足 → 强制休息
+        # 强制休息保护：当天已过 80% 时间但休息仍未满足
+        minutes_in_day = state.sim_minutes % 1440
+        if minutes_in_day >= 1152:  # 80% of 1440 = 1152 (19:12)
+            minutes_left = 1440 - minutes_in_day
+            if minutes_left >= config.min_continuous_rest_minutes:
+                wait = min(config.min_continuous_rest_minutes, 480)
+                return ScheduleDecision(
+                    action=ScheduleAction.REST,
+                    reason=f"强制休息：当天已过80%但休息未满足（最长{state.longest_rest_today}min/{config.min_continuous_rest_minutes}min），立即休{wait}min",
+                    wait_minutes=wait,
+                    priority=82,
+                )
+
         hour = state.hour_in_day()
+        remaining_rest_needed = config.min_continuous_rest_minutes - state.current_rest_streak
+
+        # 阶段 1: 在建议休息时段内开始 — 一步到位
         in_rest_window = False
         if config.suggested_rest_start_hour > config.suggested_rest_end_hour:
-            # 跨天窗口
             in_rest_window = hour >= config.suggested_rest_start_hour or hour < config.suggested_rest_end_hour
         else:
             in_rest_window = config.suggested_rest_start_hour <= hour < config.suggested_rest_end_hour
 
         if in_rest_window:
-            remaining = config.min_continuous_rest_minutes - state.current_rest_streak
-            # 一次性输出尽可能多的休息时长，减少步骤数
-            wait = min(remaining, 120)
+            # 关键：评测系统按自然日边界切割 wait interval，取当天最长 merged 段。
+            # 跨天延续的 streak 不会被评测系统视为当天的 rest。
+            # 因此必须在当天日历内输出完整的 min_continuous_rest_minutes，
+            # 而不是基于 streak 的 remaining_rest_needed。
+            wait = min(config.min_continuous_rest_minutes, 480)
             return ScheduleDecision(
                 action=ScheduleAction.REST,
-                reason=f"每日休息未满足（已休{state.current_rest_streak}min/{config.min_continuous_rest_minutes}min）",
+                reason=f"每日休息：一次性休{wait}min（需{config.min_continuous_rest_minutes}min）",
                 wait_minutes=wait,
                 priority=70,
             )
 
-        # 不在休息窗口但今日仍未满足：如果快到休息窗口了，提前准备
-        # 这里不强制，让 WORK 继续
+        # 阶段 1.5: 错过窗口补偿 — 已经过了建议窗口结束时间但今日尚未满足
+        # 这通常发生在长途单跨天后：接单期间跨过了整个建议窗口
+        # 关键约束：评测系统按自然日边界（00:00）切割 wait。
+        # 如果当天剩余时间不够完成整段 rest，强行开始会导致跨天，
+        # 两天都不满足 → 双重违规。此时应等到次日凌晨（00:00）再 rest。
+        past_rest_window = False
+        if config.suggested_rest_start_hour > config.suggested_rest_end_hour:
+            past_rest_window = config.suggested_rest_end_hour <= hour < config.suggested_rest_start_hour
+        else:
+            past_rest_window = hour >= config.suggested_rest_end_hour
+
+        minutes_in_day = state.sim_minutes % 1440
+        minutes_left_today = 1440 - minutes_in_day
+
+        if past_rest_window and state.longest_rest_today < config.min_continuous_rest_minutes:
+            # 和阶段 1 同理，必须输出完整的 min_continuous_rest_minutes
+            full_rest = config.min_continuous_rest_minutes
+            if minutes_left_today >= full_rest:
+                # 当天还有足够时间完成整段 rest → 立即补偿
+                wait = min(full_rest, 480)
+                return ScheduleDecision(
+                    action=ScheduleAction.REST,
+                    reason=f"错过建议窗口补偿：今日最长休息{state.longest_rest_today}min不足{config.min_continuous_rest_minutes}min，补偿{wait}min",
+                    wait_minutes=wait,
+                    priority=75,
+                )
+            else:
+                # 当天剩余时间不够完整休息 → 立即开始休息
+                # 虽然跨天会被评测系统切割，但当天的部分仍计入 longest_rest_today，
+                # 比完全不休息（等到凌晨）要好。评测系统看的是当天最长连续 wait 段。
+                # 输出完整的 min_continuous_rest_minutes，让评测系统自行切割。
+                wait = min(config.min_continuous_rest_minutes, 480)
+                return ScheduleDecision(
+                    action=ScheduleAction.REST,
+                    reason=f"错过窗口紧急补偿：剩余{minutes_left_today}min不够完整休息{config.min_continuous_rest_minutes}min，立即开始",
+                    wait_minutes=wait,
+                    priority=78,
+                )
+
+        # 阶段 2: 紧急补偿 — 当天剩余时间不足以"先工作再休息"时强制开始
+        if minutes_left_today <= remaining_rest_needed + 30:
+            wait = min(remaining_rest_needed, 480)
+            return ScheduleDecision(
+                action=ScheduleAction.REST,
+                reason=f"紧急休息：今日剩余{minutes_left_today}min，一次性休{wait}min",
+                wait_minutes=wait,
+                priority=80,
+            )
+
         return None
 
-    def _handle_off_day(self, state: DriverState, config: DriverConfig) -> ScheduleDecision | None:
-        """月度 off-day 规划。
+    def _init_rest_calendar(self, state: DriverState, config: DriverConfig) -> None:
+        """月初一次性规划 off-day 日期。
 
-        优化策略：优先在货源低谷日（周末）安排 off-day，而非月底集中休息。
-        月底是冲刺期，休息会损失最多收入。
+        策略：
+          1. 优先选周末（货源少、机会成本低）
+          2. 周末不够时，均匀分布在非关键日
+          3. 避开家事期间、特殊货源日
+          4. 结果存入 state.planned_off_days，后续查表执行
         """
+        state.rest_calendar_initialized = True
+
+        if config.monthly_off_days_required <= 0:
+            return
+
         current_day = state.current_day()
         total_days = 31
-        remaining_days = total_days - current_day
+        needed = config.monthly_off_days_required
+
+        # 收集不可用的日期（家事期间、特殊货源前后）
+        blocked_days: set[int] = set()
+        if config.family_event:
+            fe = config.family_event
+            fe_start = fe.trigger_min // 1440
+            fe_end = fe.end_min // 1440
+            for d in range(max(0, fe_start - 1), min(total_days, fe_end + 2)):
+                blocked_days.add(d)
+        if config.special_cargo and config.special_cargo.cargo_id:
+            sc_day = config.special_cargo.available_from_min // 1440
+            for d in range(max(0, sc_day - 1), min(total_days, sc_day + 2)):
+                blocked_days.add(d)
+
+        # 排除已过去的日期和已有接单/空驶的日期
+        # 已确认的 off-day 不需要重新规划
+        available_days = []
+        for d in range(current_day, total_days):
+            if d in blocked_days:
+                continue
+            if d in state.order_days:
+                continue
+            available_days.append(d)
+
+        # 已经有的 off-day 不用再规划
+        already_done = len(state.off_days)
+        still_needed = needed - already_done
+        if still_needed <= 0:
+            return
+
+        from agent.core.state_tracker import _calendar_weekday
+
+        # 第一轮：选周末
+        weekends = [d for d in available_days if _calendar_weekday(d) >= 5]
+        chosen: list[int] = []
+        for d in weekends:
+            if len(chosen) >= still_needed:
+                break
+            chosen.append(d)
+
+        # 第二轮：周末不够，均匀补充工作日
+        if len(chosen) < still_needed:
+            remaining_candidates = [d for d in available_days
+                                    if d not in chosen and _calendar_weekday(d) < 5]
+            gap = still_needed - len(chosen)
+            if remaining_candidates and gap > 0:
+                # 均匀分布，确保选够
+                step = max(1, len(remaining_candidates) // (gap + 1))
+                for i in range(gap):
+                    idx = min((i + 1) * step, len(remaining_candidates) - 1)
+                    if remaining_candidates[idx] not in chosen:
+                        chosen.append(remaining_candidates[idx])
+
+        # 第三轮：如果仍然不够（极端情况），从所有可用天中补充
+        if len(chosen) < still_needed:
+            for d in available_days:
+                if d not in chosen:
+                    chosen.append(d)
+                    if len(chosen) >= still_needed:
+                        break
+
+        state.planned_off_days = set(chosen)
+
+    def _handle_off_day_lock(self, state: DriverState, config: DriverConfig) -> ScheduleDecision | None:
+        """Off-day 全局锁：预规划的 off-day 当天，锁死为 wait。
+
+        这是一个正面锁定机制，而非消极保护：
+          - 当天在 planned_off_days 中 → 整天只输出 wait
+          - 紧急兜底：月末剩余天数不够时，强制补充 off-day
+          - 已经接过单或做过空驶的日子无法作为 off-day → 跳过并补规划
+        """
+        current_day = state.current_day()
         off_days_done = len(state.off_days)
         off_days_needed = config.monthly_off_days_required - off_days_done
+
+        import logging
+        _log = logging.getLogger("agent.schedule_planner")
+        _log.info(
+            "off-day check: day=%d, off_days=%s (done=%d), needed=%d, planned=%s, "
+            "today_orders=%d, today_repos=%s",
+            current_day, state.off_days, off_days_done, off_days_needed,
+            state.planned_off_days, state.today_order_count, state.today_has_repositioned)
 
         if off_days_needed <= 0:
             return None
 
-        # 今天已经接过单了，不能作为 off-day
-        if state.today_order_count > 0:
+        # 今天已经接过单或做过空驶，不能作为 off-day
+        if state.today_order_count > 0 or state.today_has_repositioned:
             return None
 
-        # 策略1：周末优先（周六=5, 周日=6 是货源低谷日）
-        from agent.core.state_tracker import _calendar_weekday
-        weekday = _calendar_weekday(current_day)
-        is_weekend = weekday >= 5
+        is_planned = current_day in state.planned_off_days
 
-        if is_weekend:
-            # 周末且还需要 off-day → 安排休息（一次性等待一整天减少步骤）
+        # 紧急兜底：剩余天数不够时强制
+        remaining_days = 31 - current_day
+        is_urgent = remaining_days <= off_days_needed + 1
+
+        if is_planned or is_urgent:
+            minutes_left_today = 1440 - (state.sim_minutes % 1440)
+            wait = min(480, minutes_left_today)
+            reason = (f"off-day 全局锁（{'计划日' if is_planned else '紧急补充'}，"
+                      f"已完成{off_days_done}/{config.monthly_off_days_required}天）")
             return ScheduleDecision(
                 action=ScheduleAction.OFF_DAY,
-                reason=f"周末低谷日安排 off-day（还需{off_days_needed}天）",
-                wait_minutes=480,
-                priority=60,
+                reason=reason,
+                wait_minutes=wait,
+                priority=95,  # 极高优先级，仅家事可覆盖
             )
 
-        # 策略2：紧急兜底 - 剩余天数不够时强制安排
-        if remaining_days <= off_days_needed + 1:
-            return ScheduleDecision(
-                action=ScheduleAction.OFF_DAY,
-                reason=f"紧急：仅剩{remaining_days}天，还需{off_days_needed}天 off-day",
-                wait_minutes=480,
-                priority=75,
-            )
+        return None
 
-        # 策略3：均匀分布 - 计算理想间隔，到了该休息的时候就休息
-        if off_days_needed > 0 and remaining_days > off_days_needed:
-            ideal_interval = remaining_days // (off_days_needed + 1)
-            # 找到上一个 off-day 的天数
-            last_off = max(state.off_days) if state.off_days else -1
-            days_since_last_off = current_day - last_off
-            if days_since_last_off >= ideal_interval:
+    def _minutes_until_quiet_start(self, sim_minutes: int, quiet_window: QuietWindow) -> int:
+        """计算距离安静窗口开始还有多少分钟。
+
+        如果已在安静窗口内返回 0，如果不在则返回到下一次进入的分钟数。
+        """
+        day_offset = sim_minutes % 1440
+        qw_start_in_day = quiet_window.start  # 日内开始分钟
+        if day_offset < qw_start_in_day:
+            return qw_start_in_day - day_offset
+        # 当前已过今天的安静窗口开始时间
+        # 如果 end > 1440（跨天），可能仍在安静窗口内
+        if quiet_window.end > 1440:
+            qw_end_in_day = quiet_window.end - 1440
+            if day_offset < qw_end_in_day:
+                return 0  # 仍在安静窗口中
+        # 到明天的安静窗口开始
+        return (1440 - day_offset) + qw_start_in_day
+
+    def _handle_special_cargo_approach(self, state: DriverState,
+                                          config: DriverConfig) -> ScheduleDecision | None:
+        """特殊货源提前空驶：确保在上架时间前到达装货点附近。
+
+        策略：
+          1. 计算当前位置到装货点的行驶时间
+          2. 如果需要出发的时刻 ≤ 当前时刻，立即空驶
+          3. 预留 30 分钟缓冲（不在到达前太早抵达，避免空等浪费时间）
+          4. 罚分 10000 元，宁可早到等一会也不能错过
+        """
+        sc = config.special_cargo
+        if not sc or not sc.cargo_id:
+            return None
+
+        # 距离和行驶时间
+        dist_km = haversine_km(state.current_lat, state.current_lng,
+                               sc.pickup_lat, sc.pickup_lng)
+        travel_min = dist_km / max(config.reposition_speed_kmpm, 0.01)
+
+        # 已经在装货点附近（< 5km），等货上架即可
+        if dist_km < 5.0:
+            # 如果距上架时间还有很久，正常工作；距上架不到 60 分钟就等待
+            time_to_available = sc.available_from_min - state.sim_minutes
+            if 0 < time_to_available <= 60:
                 return ScheduleDecision(
-                    action=ScheduleAction.OFF_DAY,
-                    reason=f"均匀分布 off-day（间隔{days_since_last_off}天，理想{ideal_interval}天）",
-                    wait_minutes=480,
-                    priority=55,
+                    action=ScheduleAction.REST,
+                    reason=f"特殊货源即将上架（{time_to_available:.0f}分钟后），在装货点附近等待",
+                    wait_minutes=min(int(time_to_available), 30),
+                    priority=70,
                 )
+            return None  # 距上架还早，或已过上架时间（交给 query_cargo 被动接单）
+
+        # 计算最晚出发时刻：上架时间 - 行驶时间 - 30 分钟缓冲
+        # 缓冲用于应对 scan_cost、query_cargo 延迟等不确定性
+        buffer_min = 30
+        latest_depart = sc.available_from_min - travel_min - buffer_min
+
+        # 如果已经过了最晚出发时刻，立即空驶
+        if state.sim_minutes >= latest_depart:
+            # 但如果已经过了上架时间很久（超过 2 小时），放弃主动空驶
+            # （可能已经错过了，或者 query_cargo 会在到达后自然查到）
+            if state.sim_minutes > sc.available_from_min + 120:
+                return None
+            return ScheduleDecision(
+                action=ScheduleAction.REPOSITION,
+                reason=f"特殊货源（罚{sc.penalty_if_missed:.0f}元）提前空驶，"
+                       f"距装货点{dist_km:.0f}km约需{travel_min:.0f}分钟",
+                target_pos=(sc.pickup_lat, sc.pickup_lng),
+                priority=85,
+            )
+
+        # 还没到出发时间：提前出发策略
+        # 距离越远越需要提前（宁早不晚），罚分 10000 元不能冒险
+        time_to_depart = latest_depart - state.sim_minutes
+        # 动态提前窗口：距离 >100km 提前 4h, >50km 提前 2h, 否则不提前
+        if dist_km > 100:
+            early_window = 240  # 4 小时
+        elif dist_km > 50:
+            early_window = 120  # 2 小时
+        else:
+            early_window = 0
+        if early_window > 0 and time_to_depart <= early_window:
+            return ScheduleDecision(
+                action=ScheduleAction.REPOSITION,
+                reason=f"特殊货源距离较远（{dist_km:.0f}km），提前{early_window//60}h出发确保不错过",
+                target_pos=(sc.pickup_lat, sc.pickup_lng),
+                priority=78,
+            )
 
         return None
 

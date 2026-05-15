@@ -76,6 +76,7 @@ class DriverConfig:
     min_continuous_rest_minutes: int = 0
     rest_weekday_only: bool = False
     monthly_off_days_required: int = 0
+    off_day_standard: str = "B"  # "A"=无接单即可, "B"=无接单+无空驶
 
     # 禁止活动时段
     quiet_window: QuietWindow | None = None
@@ -159,15 +160,26 @@ def build_config_from_parsed(parsed: Any) -> DriverConfig:
         config.penalty_weights["rest"] = max_rest.penalty_per_day
 
         # 根据休息时长推算建议休息时段
+        # 关键：评测系统按自然日（00:00-24:00）切割 wait interval 计算每日最长连续休息。
+        # 因此跨天的 wait 会被拆分，两天可能都不满足。
+        # 策略：将建议窗口起点放在凌晨（00:00 之后），确保整段 wait 在同一天内完成。
+        # 例如需要 300min(5h) → 窗口 00:00-07:00，触发后 wait 在 00:xx-05:xx 完成，全在当天。
+        rest_hours = config.min_continuous_rest_minutes / 60
         if config.min_continuous_rest_minutes >= 480:
-            config.suggested_rest_start_hour = 22
-            config.suggested_rest_end_hour = 6
+            # 8h 需要特殊处理：00:00-09:00 窗口
+            config.suggested_rest_start_hour = 0
+            config.suggested_rest_end_hour = 9
         elif config.min_continuous_rest_minutes >= 300:
-            config.suggested_rest_start_hour = 23
-            config.suggested_rest_end_hour = 4
+            # 5h → 00:00-07:00
+            config.suggested_rest_start_hour = 0
+            config.suggested_rest_end_hour = 7
+        elif config.min_continuous_rest_minutes >= 180:
+            # 3h → 00:00-05:00
+            config.suggested_rest_start_hour = 0
+            config.suggested_rest_end_hour = 5
         else:
             config.suggested_rest_start_hour = 0
-            config.suggested_rest_end_hour = 3
+            config.suggested_rest_end_hour = 4
 
     # 2) 安静窗口：取最早/最宽的
     if parsed.quiet_windows:

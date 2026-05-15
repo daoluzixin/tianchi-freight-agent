@@ -278,14 +278,12 @@ def parse_llm_response(driver_status: dict[str, Any], llm_output: str) -> Parsed
     try:
         data = json.loads(llm_output)
     except json.JSONDecodeError as e:
-        logger.error("Failed to parse LLM output as JSON: %s", e)
-        # 回退：所有偏好放入 custom
-        _fallback_to_custom(result, driver_status)
-        return result
+        logger.error("Failed to parse LLM output as JSON: %s — using rule-based fallback", e)
+        return _rule_based_fallback(driver_status)
 
     if not isinstance(data, dict):
-        _fallback_to_custom(result, driver_status)
-        return result
+        logger.error("LLM output is not a dict — using rule-based fallback")
+        return _rule_based_fallback(driver_status)
 
     # 解析各类约束
     for item in data.get("rest_constraints", []):
@@ -436,6 +434,12 @@ def _fallback_to_custom(result: ParsedPreferences, driver_status: dict[str, Any]
         ))
 
 
+def _rule_based_fallback(driver_status: dict[str, Any]) -> ParsedPreferences:
+    """延迟导入 rule_based_parser 以避免循环导入。"""
+    from agent.config.rule_based_parser import rule_based_parse
+    return rule_based_parse(driver_status)
+
+
 # ===========================================================================
 # 主入口：调用 LLM 解析偏好
 # ===========================================================================
@@ -491,18 +495,15 @@ class PreferenceParser:
                 content = choices[0].get("message", {}).get("content", "")
                 result = parse_llm_response(driver_status, content)
             else:
-                logger.warning("LLM returned empty choices for %s", driver_id)
-                result = ParsedPreferences(driver_id=driver_id)
-                _fallback_to_custom(result, driver_status)
+                logger.warning("LLM returned empty choices for %s — using rule-based fallback", driver_id)
+                result = _rule_based_fallback(driver_status)
         except Exception as e:
-            logger.error("LLM parse failed for %s: %s", driver_id, e)
-            result = ParsedPreferences(
-                driver_id=driver_id,
-                cost_per_km=float(driver_status.get("cost_per_km", 1.5)),
-                initial_lat=float(driver_status.get("current_lat", 0.0)),
-                initial_lng=float(driver_status.get("current_lng", 0.0)),
-            )
-            _fallback_to_custom(result, driver_status)
+            logger.error("LLM parse failed for %s: %s — using rule-based fallback", driver_id, e)
+            result = _rule_based_fallback(driver_status)
+
+        # 完整性校验：对高罚分关键约束做 fallback 补全
+        # 如果偏好文本中包含关键词但 LLM 解析结果缺失，用 rule_based_parser 补充
+        result = self._patch_missing_critical(result, driver_status)
 
         self._cache[driver_id] = result
         logger.info("Parsed %s: rest=%d, quiet=%d, forbidden_cat=%d, max_dist=%d, "
@@ -517,4 +518,54 @@ class PreferenceParser:
                     len(result.family_events),
                     len(result.visit_targets),
                     len(result.custom))
+        return result
+
+    @staticmethod
+    def _patch_missing_critical(result: ParsedPreferences,
+                                driver_status: dict[str, Any]) -> ParsedPreferences:
+        """LLM 解析后补全遗漏的高罚分约束。
+
+        对 family_events、special_cargos、go_home 等高罚分约束做关键词检测：
+        如果偏好文本中包含对应关键词但解析结果为空，则用 rule_based_parser 补充。
+        这是泛化防护，不针对任何特定 driver_id。
+        """
+        preferences = driver_status.get("preferences", [])
+        all_text = " ".join(str(p.get("content", "")) for p in preferences)
+
+        needs_patch = False
+        # 家事约束：高罚分（9000+），必须正确解析
+        if not result.family_events and ("家事" in all_text or "临时约定·家事" in all_text):
+            needs_patch = True
+        # 特殊货源：高罚分（10000），必须正确解析
+        # "临时约定"可能关联熟货/指定货源，需同时检查
+        if not result.special_cargos and (
+            "指定货源" in all_text or "必接" in all_text
+            or "熟货" in all_text or "临时约定" in all_text
+        ):
+            needs_patch = True
+        # 每日回家：高罚分，必须正确解析
+        if not result.go_home and ("回家" in all_text or "到家" in all_text or "进家门" in all_text):
+            needs_patch = True
+
+        if not needs_patch:
+            return result
+
+        logger.warning("LLM parse missed critical constraints — patching with rule-based parser")
+        from agent.config.rule_based_parser import rule_based_parse
+        rb_result = rule_based_parse(driver_status)
+
+        # 只补充缺失的高罚分约束，不覆盖 LLM 已正确解析的部分
+        if not result.family_events and rb_result.family_events:
+            result.family_events = rb_result.family_events
+            logger.info("Patched: added %d family_events from rule-based parser",
+                        len(rb_result.family_events))
+        if not result.special_cargos and rb_result.special_cargos:
+            result.special_cargos = rb_result.special_cargos
+            logger.info("Patched: added %d special_cargos from rule-based parser",
+                        len(rb_result.special_cargos))
+        if not result.go_home and rb_result.go_home:
+            result.go_home = rb_result.go_home
+            logger.info("Patched: added %d go_home from rule-based parser",
+                        len(rb_result.go_home))
+
         return result

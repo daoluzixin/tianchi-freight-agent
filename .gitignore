@@ -29,3 +29,4 @@ logs/
 # Data (从 API 获取，不跟踪)
 demo/server/data/*.json
 !demo/server/data/.gitkeep
+demo/server/data/*.jsonl

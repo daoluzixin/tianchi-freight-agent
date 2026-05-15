@@ -37,6 +37,7 @@ from agent.core.state_tracker import StateTracker, DriverState, haversine_km
 from agent.core.schedule_planner import SchedulePlanner, ScheduleAction, ScheduleDecision
 from agent.core.rule_engine import RuleEngine, FilteredCargo
 from agent.scoring.cargo_scorer import CargoScorer, ScoredCargo
+from agent.scoring.experience_tracker import ExperienceTracker, hour_to_time_slot, pos_to_region_key
 from agent.core.timeline_projector import SCAN_COST_MINUTES, SAFETY_BUFFER_MINUTES
 from agent.strategy.token_budget import TokenBudgetManager
 from agent.strategy.strategy_advisor import StrategyAdvisor, StrategyParams
@@ -69,6 +70,10 @@ class ModelDecisionService:
         self._parser = PreferenceParser()
         self._budget = TokenBudgetManager()
         self._advisor = StrategyAdvisor()
+        self._experience = ExperienceTracker()
+
+        # 将经验追踪器注入 StrategyAdvisor，供 daily_review 使用
+        self._advisor._experience_tracker = self._experience
 
         # 运行时状态
         self._initialized: set[str] = set()  # 已完成初始化的 driver_id
@@ -123,6 +128,18 @@ class ModelDecisionService:
                     pseudo_result["pickup_deadhead_km"] = pickup_km
             self._tracker.update_after_action(state, prev_action, pseudo_result)
 
+            # 经验回填：上一步如果是 take_order 且 accepted，回填实际结果
+            if action_name == "take_order" and pseudo_result.get("accepted"):
+                delivery_lat = float(status.get("current_lat", 0.0))
+                delivery_lng = float(status.get("current_lng", 0.0))
+                income = float(pseudo_result.get("income", 0.0))
+                if income <= 0:
+                    income = float(prev_action.get("_cargo_price", 0.0))
+                self._experience.settle_pending(
+                    driver_id, income, delivery_lat, delivery_lng, state.sim_minutes)
+            else:
+                self._experience.discard_pending(driver_id)
+
             # 补偿完成后再做跨天检测：此时 order_days 已经包含前一步的接单信息
             self._tracker.check_day_rollover(state)
 
@@ -163,7 +180,8 @@ class ModelDecisionService:
 
         config = get_config(driver_id)
 
-        # 2. 每日策略回顾
+        # 2. 每日经验衰减 + 策略回顾
+        self._experience.daily_decay(driver_id, state.current_day())
         self._maybe_daily_review(driver_id, state, config)
 
         self._logger.info(
@@ -402,6 +420,31 @@ class ModelDecisionService:
         """正常工作模式：查货 → 过滤 → 评分 → 智能决策。"""
         params = self._advisor.get_params(driver_id)
 
+        # R9-A: 首单 deadline 硬阻断 — 已过 deadline 且今天没接过单时，
+        # 强制降低等待阈值、压低 wait_value，避免"一直等更好的"导致全天0单
+        if (config.first_order_deadline_hour is not None
+                and state.today_first_order_minute is None):
+            hour = state.hour_in_day()
+            hours_past = hour - config.first_order_deadline_hour
+            if hours_past > 0:
+                # 临时压低等待阈值和激进度，让 _rule_based_decision 更容易接单
+                params.wait_score_threshold = min(params.wait_score_threshold, -10.0)
+                params.aggression = min(1.0, params.aggression + 0.3)
+                self._logger.info(
+                    "R9-A first-order hard block: %dh past deadline, "
+                    "threshold=%.1f aggression=%.2f",
+                    hours_past, params.wait_score_threshold, params.aggression)
+
+        # R9-C: 安静窗口二次验证 — 即使 SchedulePlanner 漏过（如偏好解析不全），
+        # _work_mode 入口处再次检查：当前已在安静窗口内则直接 wait 到窗口结束。
+        # 这是对 SchedulePlanner 的兜底保护，不依赖偏好解析的完整性。
+        if config.quiet_window and config.quiet_window.is_active(state.sim_minutes):
+            remaining = config.quiet_window.minutes_until_end(state.sim_minutes)
+            self._logger.info(
+                "R9-C quiet window safety net: currently in quiet window, "
+                "wait %dmin until end", remaining)
+            return self._make_batch_wait(min(remaining, 480))
+
         # 安静窗口前瞻保护：如果当前时间 + 预估 scan_cost 会进入安静窗口，
         # 直接返回 REST 而不是进入查询流程（query_cargo 会推进仿真时间）
         if config.quiet_window:
@@ -524,6 +567,17 @@ class ModelDecisionService:
                     idle_steps, merged_wait)
                 self._steps_without_order[driver_id] = idle_steps + 1
                 return self._make_batch_wait(merged_wait)
+
+        # 检索当前场景的历史经验，传递给 scorer 用于校准
+        current_hour = state.hour_in_day()
+        current_ts = hour_to_time_slot(current_hour)
+        current_rk = pos_to_region_key(state.current_lat, state.current_lng)
+        exp_summary = self._experience.query_experience(
+            driver_id, current_ts, current_rk, state.current_day())
+        if exp_summary:
+            self._scorer._current_experience = exp_summary
+        else:
+            self._scorer._current_experience = None
 
         # 阶段 1: 查询 & 过滤
         scored = self._query_filter_and_score(driver_id, state, config, params)
@@ -697,6 +751,17 @@ class ModelDecisionService:
                 llm_result.get("params", {}), best.score)
             if blocked:
                 return self._make_wait(self._smart_wait(state, params))
+            # R8 fix: LLM 增强路径也要记录决策经验
+            chosen_id = str(llm_result.get("params", {}).get("cargo_id", ""))
+            chosen_sc = next(
+                (sc for sc in scored if str(sc.cargo.get("cargo_id", "")) == chosen_id),
+                best)
+            self._experience.record_decision(
+                driver_id, state.sim_minutes,
+                state.current_lat, state.current_lng,
+                float(chosen_sc.cargo.get("price", 0.0)),
+                chosen_sc.pickup_km, chosen_sc.score, state.current_day())
+            llm_result["_cargo_price"] = float(chosen_sc.cargo.get("price", 0.0))
             return llm_result
 
         # LLM 建议等待
@@ -737,7 +802,15 @@ class ModelDecisionService:
             cargo_id = str(best.cargo.get("cargo_id", ""))
             self._logger.info("take best cargo: %s (score=%.2f)", cargo_id, best.score)
             self._steps_without_order[driver_id] = 0
-            return self._make_take_order(cargo_id)
+            # 记录决策经验
+            self._experience.record_decision(
+                driver_id, state.sim_minutes,
+                state.current_lat, state.current_lng,
+                float(best.cargo.get("price", 0.0)),
+                best.pickup_km, best.score, state.current_day())
+            action = self._make_take_order(cargo_id)
+            action["_cargo_price"] = float(best.cargo.get("price", 0.0))
+            return action
 
         # 低分：判断等待 vs 勉强接
         wait_value = self._compute_smart_wait_value(state, config, avg_recent, params)
@@ -759,6 +832,11 @@ class ModelDecisionService:
             self._logger.info("wait (score=%.2f < wait_value=%.2f)", best.score, wait_value)
             self._steps_without_order[driver_id] = (
                 self._steps_without_order.get(driver_id, 0) + 1)
+            # R8: 记录等待决策，追踪「等了之后是否等到了更好的货」
+            self._experience.record_wait_decision(
+                driver_id, state.sim_minutes,
+                state.current_lat, state.current_lng,
+                best.score, state.current_day())
             return self._make_wait(self._smart_wait(state, params))
 
         # 等待价值也低，接最优的负分单
@@ -767,7 +845,15 @@ class ModelDecisionService:
             "reluctant take: %s (score=%.2f, wait=%.2f)",
             cargo_id, best.score, wait_value)
         self._steps_without_order[driver_id] = 0
-        return self._make_take_order(cargo_id)
+        # 记录决策经验
+        self._experience.record_decision(
+            driver_id, state.sim_minutes,
+            state.current_lat, state.current_lng,
+            float(best.cargo.get("price", 0.0)),
+            best.pickup_km, best.score, state.current_day())
+        action = self._make_take_order(cargo_id)
+        action["_cargo_price"] = float(best.cargo.get("price", 0.0))
+        return action
 
     # ----- 子流程 4: Custom 约束检查 -----
 
@@ -1043,6 +1129,36 @@ class ModelDecisionService:
         steps_waiting = self._steps_without_order.get(state.driver_id, 0)
         if steps_waiting >= 3:
             base_wait_value *= max(0.3, 1 - steps_waiting * 0.15)
+
+        # R10-B: 步级等待反馈 — 最近等待成功率低时进一步衰减 wait_value
+        # 如果最近 N 次等待都没等到更好的货（成功率=0），说明当前时段/区域
+        # 等待无意义，应直接接单。这是经验驱动的自适应反馈，非硬编码规则。
+        #
+        # 长途司机识别：avg_order_exec_time >= 200min 视为长途，
+        # 长途场景货源天然稀疏，连续几次"没等到更好的"是常态，
+        # 需要更宽松的窗口和更温和的衰减，避免误判。
+        avg_exec = state.avg_order_exec_time
+        is_long_haul = avg_exec is not None and avg_exec >= 200
+        wait_lookback = 5 if is_long_haul else 3
+        decay_strong = 0.5 if is_long_haul else 0.3
+        decay_mild = 0.75 if is_long_haul else 0.6
+
+        wait_sr, wait_n = self._experience.get_recent_wait_success_rate(
+            state.driver_id, n=wait_lookback)
+        if wait_n >= wait_lookback:
+            if wait_sr <= 0.0:
+                base_wait_value *= decay_strong
+                self._logger.debug(
+                    "R10-B step-level wait feedback: 0/%d success, "
+                    "long_haul=%s, wait_value *= %.2f",
+                    wait_n, is_long_haul, decay_strong)
+            elif wait_sr < (1.0 / wait_lookback + 0.01):
+                # 只有 1 次成功：中等衰减
+                base_wait_value *= decay_mild
+                self._logger.debug(
+                    "R10-B step-level wait feedback: %.0f%% success, "
+                    "long_haul=%s, wait_value *= %.2f",
+                    wait_sr * 100, is_long_haul, decay_mild)
 
         return base_wait_value
 

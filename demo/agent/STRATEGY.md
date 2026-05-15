@@ -511,3 +511,44 @@ DRIVER_CONFIGS = {
 | D009 熟货被其他步骤错过窗口 | 从 3/2 晚就开始向韶关移动 |
 | D010 家事期间误操作 | 状态机严格锁定，事件期间屏蔽所有非 wait 动作 |
 | Token 超限 | 监控累计 token，接近阈值时退化为纯规则决策 |
+
+---
+
+## 十、R9 优化计划（规则修复 + 经验积累机制）
+
+基于 R8.6 仿真结果（净收入 +200,368，罚分 -19,159），识别出两条优化路径：
+
+### 10.1 规则层罚分修复（预期回收 ~12,100 元）
+
+**A. D004 首单 12:00 前硬阻断**（~3,800 元）
+- 问题：_work_mode 中缺少对首单 deadline 前的强制 WORK 保护，导致 D004 在午前被低优先级 rest/off-day 拦截
+- 修复：在 _work_mode 开头加入首单 deadline 紧迫检测——已过 deadline 且无首单时阻止等待、降低接单阈值
+
+**B. D010 到访目标提前触发**（~3,000 元）
+- 问题：visit_target 触发条件过松（剩余天数 ≤ visits_needed + 2），月末才紧急空驶
+- 修复：schedule_planner._handle_visit_target 中加入"均匀分布"检查——如果完成进度落后于预期天数进度，提前触发
+
+**C. D003 凌晨 2-5 点硬阻断**（~1,400 元）
+- 问题：D003 安静窗口 2:00-5:00 依赖偏好解析准确性，如解析遗漏则无保护
+- 修复：_work_mode 中增加安静窗口二次验证——即使 SchedulePlanner 未拦截，若当前在安静窗口内仍返回 wait
+
+**D. D001/D008 强制休息窗口**（~3,100 元）
+- 问题：off-day 锁和 go-home 可能覆盖 daily_rest，导致休息时段被跳过
+- 修复：已有逻辑较完善，优化 _handle_daily_rest 的 go_home 冲突保护精度
+
+### 10.2 经验积累机制（来自论文启发）
+
+**E. enhance_decision 注入 few-shot 历史决策**
+- 来源：NeurIPS 2025 "Self-Generated In-Context Examples"
+- 问题：当前 _build_decision_context 只传当前状态，无历史决策参考
+- 修复：从 ExperienceTracker 提取"同时段同区域"的 top-3 历史决策（含结果），注入 prompt
+
+**F. OPRO 缓冲区保留失败实验 + 违规反思**
+- 来源：Reflexion (Shinn et al. 2023) + SLEA-RL
+- 问题：ExperienceBuffer 只保留 top-10 高净效益实验，丢弃所有失败数据
+- 修复：新增 _worst_buffer 保留 worst-3，daily_review prompt 同时展示好坏两极；违规反思注入
+
+**G. wait 决策经验追踪**
+- 来源：SLEA-RL step-level experience
+- 问题：ExperienceTracker.record_decision 只记录 take_order，wait 决策无回溯
+- 修复：新增 record_wait_decision 方法，记录等待时的时段/区域/后续是否获得更好货源

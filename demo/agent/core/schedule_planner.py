@@ -779,7 +779,12 @@ class SchedulePlanner:
         return None
 
     def _handle_visit_target(self, state: DriverState, config: DriverConfig) -> ScheduleDecision | None:
-        """到访目标点规划。"""
+        """到访目标点规划。
+
+        R9-B 改进：加入"均匀分布"进度检查。
+        如果已完成次数落后于按天数线性期望值（expected = required * day/31），
+        提前触发到访，避免全压到月末紧急空驶。
+        """
         if not config.visit_target:
             return None
 
@@ -806,6 +811,22 @@ class SchedulePlanner:
                 target_pos=config.visit_target,
                 priority=50,
             )
+
+        # R9-B: 均匀分布进度检查 — 如果完成率低于期望进度，主动触发
+        # expected_visits = required * (current_day / 31)
+        # 如果 days_visited < expected_visits - 0.5，说明落后进度
+        current_day = state.current_day()
+        if current_day > 0 and config.visit_days_required > 0:
+            expected_visits = config.visit_days_required * current_day / 31.0
+            if days_visited < expected_visits - 0.5:
+                # 落后进度，提高优先级触发
+                return ScheduleDecision(
+                    action=ScheduleAction.REPOSITION,
+                    reason=f"到访进度落后（已{days_visited}/{config.visit_days_required}天，"
+                           f"期望{expected_visits:.1f}），主动去打卡",
+                    target_pos=config.visit_target,
+                    priority=65,
+                )
 
         # 紧急：剩余天数 ≤ 需要次数 + 2
         if days_remaining <= visits_needed + 2:

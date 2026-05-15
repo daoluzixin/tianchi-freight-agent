@@ -26,6 +26,7 @@ from agent.core.timeline_projector import (
 from agent.scoring.supply_predictor import SupplyPredictor
 
 if TYPE_CHECKING:
+    from agent.scoring.experience_tracker import ExperienceSummary, DeliveryRegionSummary
     from agent.strategy.strategy_advisor import StrategyParams
 
 
@@ -112,6 +113,8 @@ class CargoScorer:
         self.cost_per_km = cost_per_km
         self.hotspot_tracker = HotspotTracker()
         self.supply_predictor = SupplyPredictor()
+        # 由 ModelDecisionService 在每步决策前注入当前场景的经验摘要
+        self._current_experience: "ExperienceSummary | None" = None
 
     def score_and_rank(self, candidates: list[FilteredCargo],
                        state: DriverState, config: DriverConfig,
@@ -286,6 +289,10 @@ class CargoScorer:
                     penalty_per_violation = config.penalty_weights.get("first_order", 200)
                     first_order_cross_day_penalty = penalty_per_violation * min(2.0, overshoot_hours)
 
+        # 15) 经验校准加分：基于卸货区域的历史表现
+        experience_bonus = self._compute_experience_bonus(
+            delivery_lat, delivery_lng, arrival_sim_min, params)
+
         # 综合得分
         score = (gross_income
                  - distance_cost
@@ -300,7 +307,8 @@ class CargoScorer:
                  + first_order_urgency
                  - rest_lookahead_penalty
                  - go_home_penalty
-                 - first_order_cross_day_penalty)
+                 - first_order_cross_day_penalty
+                 + experience_bonus)
 
         breakdown = {
             "gross_income": gross_income,
@@ -317,6 +325,7 @@ class CargoScorer:
             "rest_lookahead_penalty": -rest_lookahead_penalty,
             "go_home_penalty": -go_home_penalty,
             "first_order_cross_day_penalty": -first_order_cross_day_penalty,
+            "experience_bonus": experience_bonus,
         }
 
         return score, breakdown
@@ -454,6 +463,51 @@ class CargoScorer:
         return 0.0
 
     # ------------------------------------------------------------------
+    # 经验校准加分
+    # ------------------------------------------------------------------
+
+    def _compute_experience_bonus(
+        self, delivery_lat: float, delivery_lng: float,
+        arrival_sim_min: int, params: "StrategyParams",
+    ) -> float:
+        """基于卸货区域的历史经验计算校准加分。
+
+        如果经验库显示该卸货区域在对应时段"下一单等待时间短"（好位置），
+        给正向加分；如果等待时间长（差位置），给负向调整。
+        """
+        exp = self._current_experience
+        if exp is None:
+            return 0.0
+
+        # 经验摘要来自 ModelDecisionService 注入的当前场景摘要
+        # 用历史"下一单等待时间"来校准位置价值
+        # 等待时间短 → 好位置 → 正向加分
+        # 等待时间长 → 差位置 → 不加分或轻微扣分
+        avg_wait = exp.avg_next_wait
+        confidence = exp.confidence
+
+        if confidence <= 0:
+            return 0.0
+
+        # 将等待时间映射到加分：
+        # 等待 < 30min → 好位置，加分最高 20 * confidence
+        # 等待 30-120min → 一般，小幅加分
+        # 等待 > 120min → 差位置，轻微扣分
+        cap = params.position_bonus_cap  # 复用 position_bonus_cap 作为上限参考
+
+        if avg_wait < 30:
+            # 好位置：加分 = cap * (1 - wait/30) * confidence * 经验权重
+            bonus = cap * (1.0 - avg_wait / 30.0) * confidence * 0.4
+        elif avg_wait < 120:
+            # 一般位置：微弱正加分
+            bonus = cap * 0.1 * (1.0 - (avg_wait - 30) / 90.0) * confidence * 0.4
+        else:
+            # 差位置：轻微扣分（不超过 -5）
+            bonus = -min(5.0, (avg_wait - 120) / 60.0 * 2.0) * confidence
+
+        return bonus
+
+    # ------------------------------------------------------------------
     # 等待价值估算
     # ------------------------------------------------------------------
 
@@ -468,7 +522,16 @@ class CargoScorer:
         day = state.current_day()
 
         # 基础等待价值 = 最近平均得分 * 到来概率
-        base_wait_value = avg_score_recent * 0.6
+        # 经验校准：如果当前位置历史上"下一单等待长"，降低等待价值（早走为妙）
+        exp = self._current_experience
+        experience_adj = 1.0
+        if exp is not None and exp.confidence > 0.3:
+            if exp.avg_next_wait > 120:
+                experience_adj = 0.6  # 差位置，少等
+            elif exp.avg_next_wait < 30:
+                experience_adj = 1.3  # 好位置，值得多等
+
+        base_wait_value = avg_score_recent * 0.6 * experience_adj
 
         # 时段调整：高峰时段等待更有价值
         if 8 <= hour <= 11 or 14 <= hour <= 18:

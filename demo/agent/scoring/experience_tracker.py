@@ -575,6 +575,113 @@ class ExperienceTracker:
 
         return "\n".join(lines) if len(lines) > 1 else "（经验数据不足）"
 
+    def extract_semantic_memory(self, driver_id: str, current_day: int) -> list[dict[str, Any]]:
+        """MUSE Semantic 层：从 Episodic 经验中提炼结构化语义记忆。
+
+        提炼三类规律：
+        1. 时段规律：哪个时段收益最高/最低
+        2. 区域规律：哪些区域是"黄金区域"（高收入+低等待）
+        3. 等待规律：等待策略在什么条件下有效
+
+        Returns:
+            语义记忆列表，每条包含 {type, pattern, confidence, detail}
+        """
+        if current_day < _COLD_START_DAYS + 2:
+            return []
+
+        index = self._index.get(driver_id, {})
+        if not index:
+            return []
+
+        memories: list[dict[str, Any]] = []
+
+        # --- 1. 时段收益规律 ---
+        slot_names = ["night", "morning", "midday", "afternoon", "evening"]
+        slot_income: dict[int, list[float]] = defaultdict(list)
+        for (ts, _rk), bucket in index.items():
+            settled = [e for e in bucket if e.settled and e.weight > 0.01]
+            for e in settled:
+                slot_income[ts].append(e.actual_income)
+
+        slot_avg = {}
+        for ts, incomes in slot_income.items():
+            if len(incomes) >= 3:
+                slot_avg[ts] = sum(incomes) / len(incomes)
+
+        if len(slot_avg) >= 2:
+            best_ts = max(slot_avg, key=slot_avg.get)  # type: ignore[arg-type]
+            worst_ts = min(slot_avg, key=slot_avg.get)  # type: ignore[arg-type]
+            if slot_avg[best_ts] > slot_avg[worst_ts] * 1.3:  # 30%+ 差异才记录
+                memories.append({
+                    "type": "time_slot_pattern",
+                    "pattern": f"{slot_names[best_ts]}时段收入显著优于{slot_names[worst_ts]}时段",
+                    "confidence": min(1.0, len(slot_income[best_ts]) / 10),
+                    "detail": {
+                        "best_slot": slot_names[best_ts],
+                        "best_avg": round(slot_avg[best_ts], 0),
+                        "worst_slot": slot_names[worst_ts],
+                        "worst_avg": round(slot_avg[worst_ts], 0),
+                    },
+                })
+
+        # --- 2. 黄金区域规律（高收入 + 低等待） ---
+        region_scores: list[tuple[tuple[int, int], float, float, int]] = []
+        for (ts, rk), bucket in index.items():
+            settled = [e for e in bucket if e.settled and e.weight > 0.01
+                       and e.next_order_wait_minutes > 0]
+            if len(settled) >= 3:
+                total_w = sum(e.weight for e in settled)
+                if total_w > 0:
+                    avg_inc = sum(e.actual_income * e.weight for e in settled) / total_w
+                    avg_wait = sum(e.next_order_wait_minutes * e.weight for e in settled) / total_w
+                    # 综合得分：收入高+等待短
+                    composite = avg_inc / max(avg_wait, 10)
+                    region_scores.append((rk, avg_inc, avg_wait, len(settled)))
+
+        if region_scores:
+            region_scores.sort(key=lambda x: x[1] / max(x[2], 10), reverse=True)
+            # 取 top-2 黄金区域
+            for rk, avg_inc, avg_wait, cnt in region_scores[:2]:
+                if cnt >= 3:
+                    memories.append({
+                        "type": "golden_region",
+                        "pattern": f"区域{rk}是黄金区域：平均收入{avg_inc:.0f}元且下一单等待仅{avg_wait:.0f}分钟",
+                        "confidence": min(1.0, cnt / 8),
+                        "detail": {
+                            "region": rk,
+                            "avg_income": round(avg_inc, 0),
+                            "avg_wait": round(avg_wait, 0),
+                            "sample_count": cnt,
+                        },
+                    })
+
+        # --- 3. 等待策略规律 ---
+        wait_records = self._wait_history.get(driver_id, [])
+        resolved = [wr for wr in wait_records if wr["resolved"]]
+        if len(resolved) >= 5:
+            improved = sum(
+                1 for wr in resolved
+                if wr["next_score"] is not None
+                and wr["next_score"] > wr["best_score_rejected"]
+            )
+            rate = improved / len(resolved)
+            if rate > 0.6:
+                memories.append({
+                    "type": "wait_strategy",
+                    "pattern": f"等待策略有效（{rate:.0%}成功率），适合在分数不够高时等待",
+                    "confidence": min(1.0, len(resolved) / 10),
+                    "detail": {"success_rate": round(rate, 2), "sample_count": len(resolved)},
+                })
+            elif rate < 0.3:
+                memories.append({
+                    "type": "wait_strategy",
+                    "pattern": f"等待策略低效（{rate:.0%}成功率），应优先接单而非等待",
+                    "confidence": min(1.0, len(resolved) / 10),
+                    "detail": {"success_rate": round(rate, 2), "sample_count": len(resolved)},
+                })
+
+        return memories
+
     # ------------------------------------------------------------------
     # 步级等待反馈
     # ------------------------------------------------------------------
